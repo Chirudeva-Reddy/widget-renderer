@@ -40,6 +40,7 @@ class ContainerNode(TypedDict):
     kind: Literal["card", "list", "list_item", "row", "col", "form", "box"]
     children: list["Node"]
     gap: NotRequired[int]
+    key: NotRequired[str]
 
 
 class TableCell(TypedDict):
@@ -276,6 +277,8 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             else:
                 nodes.append(nested)
     container: ContainerNode = {"kind": kinds[component], "children": nodes}
+    if isinstance(key, str):
+        container["key"] = key
     if component in ("Row", "Col", "ListViewItem") and "gap" in data:
         gap: object = data["gap"]
         if isinstance(gap, int) and not isinstance(gap, bool) and 0 <= gap <= 8:

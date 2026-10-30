@@ -8,7 +8,7 @@ import { Chart } from "./Chart";
 import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
 import { OrderingMenu } from "./OrderingMenu";
 import type { CartChange, QuantityEdit } from "./OrderingMenu";
-import { PreviewControl } from "./PreviewControl";
+import { PreviewControl, PreviewForm } from "./PreviewControl";
 import "./style.css";
 
 const examples: Record<string, string> = {
@@ -22,22 +22,27 @@ const examples: Record<string, string> = {
   broken: '{ "type": "Card", "children": [',
 };
 
+function nodeKey(node: Node, index: number): string {
+  if ("key" in node && node.key !== undefined) return `key:${node.key}:${node.kind}`;
+  return `position:${index}:${node.kind}`;
+}
+
 function PreviewNode({ node }: { node: Node }): ReactElement {
   if (node.kind === "button" || node.kind === "input" || node.kind === "select") return <PreviewControl control={node} />;
   if ("value" in node) return <p className={`widget-text widget-${node.kind}${node.weight ? ` weight-${node.weight}` : ""}`} dir="auto">{node.value}</p>;
   if (node.kind === "badge") return <span className="widget-badge" dir="auto">{node.label}</span>;
   if (node.kind === "spacer") return <span className="widget-spacer" aria-hidden="true" />;
   if (node.kind === "divider") return <hr className="widget-divider" />;
-  if (node.kind === "form") return <fieldset className="widget-form"><legend>Form preview · actions disabled</legend>{node.children.map((child, index) => <PreviewNode key={index} node={child} />)}</fieldset>;
+  if (node.kind === "form") return <PreviewForm>{node.children.map((child, index) => <PreviewNode key={child.kind === "input" || child.kind === "select" ? `field:${child.kind}:${child.name}` : nodeKey(child, index)} node={child} />)}</PreviewForm>;
   if (node.kind === "chart") return <Chart chart={node} />;
   if (node.kind === "table") return <div className="table-scroll"><table className="widget-table"><tbody>{node.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.cells.map((cell, cellIndex) => {
-    const content: ReactElement[] = cell.children.map((child, index) => <PreviewNode key={index} node={child} />);
+    const content: ReactElement[] = cell.children.map((child, index) => <PreviewNode key={nodeKey(child, index)} node={child} />);
     return row.header ? <th key={cellIndex} scope="col" className={cell.align ? `align-${cell.align}` : undefined}>{content}</th> : <td key={cellIndex} className={cell.align ? `align-${cell.align}` : undefined}>{content}</td>;
   })}</tr>)}</tbody></table></div>;
   if (node.kind === "problem") return <p className="problem">{node.message}</p>;
   return <div className={`widget-${node.kind}${node.gap !== undefined ? ` gap-${node.gap}` : ""}`}>
     {node.children.length === 0 ? <p className="empty-card">This {node.kind === "list" ? "list" : "container"} is empty.</p>
-      : node.children.map((child, index) => <PreviewNode key={index} node={child} />)}
+      : node.children.map((child, index) => <PreviewNode key={nodeKey(child, index)} node={child} />)}
   </div>;
 }
 
@@ -61,7 +66,6 @@ type ChatMessage = { role: "user"; text: string } | { role: "assistant"; text: s
 function App(): ReactElement {
   const [source, setSource] = useState<string>(examples.welcome);
   const [card, setCard] = useState<Card | null>(null);
-  const [previewVersion, setPreviewVersion] = useState<number>(0);
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [notice, setNotice] = useState<string>("");
   const [pending, setPending] = useState<boolean>(false);
@@ -305,7 +309,7 @@ function App(): ReactElement {
       const next: ValidationResult = await validatePayload(source);
       if (id !== requestId.current) return;
       setResult(next);
-      if (next.preview !== null) { setCard(next.preview); setPreviewVersion((version: number) => version + 1); }
+      if (next.preview !== null) setCard(next.preview);
       else setNotice("The payload could not be displayed. The last preview, if present, may be out of date.");
     } catch (error: unknown) {
       if (id !== requestId.current) return;
@@ -330,7 +334,7 @@ function App(): ReactElement {
         <div className="editor-footer"><span id="source-help">Maximum source size: 32 KiB</span><button type="submit">{pending ? "Validating…" : "Validate widget"}<span aria-hidden="true"> ↗</span></button></div>
       </form>
       <section className="panel output" aria-labelledby="preview-title"><div className="panel-heading"><div><span className="step">02 / OUTPUT</span><h2 id="preview-title">Preview</h2></div><span className="live-dot">RENDER</span></div>
-        <div className="preview-area" aria-busy={pending}>{card ? <Preview key={previewVersion} card={card} /> : <div className="empty-state"><span className="empty-icon" aria-hidden="true">◇</span><p>Your preview will appear here.</p><small>Validate a payload to get started.</small></div>}</div>
+        <div className="preview-area" aria-busy={pending}>{card ? <Preview key={`${card.kind}:${card.key ?? ""}`} card={card} /> : <div className="empty-state"><span className="empty-icon" aria-hidden="true">◇</span><p>Your preview will appear here.</p><small>Validate a payload to get started.</small></div>}</div>
         <div className="diagnostics" aria-live="polite"><div className="diagnostics-heading"><h3>Validation</h3><span>{result ? result.status.toUpperCase() : "AWAITING INPUT"}</span></div>
           {notice && <p className="notice" role="alert">{notice}</p>}
           {result && result.issues.length > 0 ? <ul>{result.issues.map((item, index) => <li key={index}><strong>{item.severity}</strong><code>{item.path}</code><span>{item.message}</span></li>)}</ul> : <p className="quiet">{result ? "No issues found." : "Issues and validation details will show here."}</p>}

@@ -31,6 +31,11 @@ class ControlApiTests(unittest.TestCase):
         self.assertNotIn("onClickAction", node["children"][2])
         self.assertEqual(result["issues"][0]["code"], "unsupported_property")
 
+    def test_layout_key_survives_validation(self) -> None:
+        result = self.validate({"type": "Form", "key": "order", "children": [{"type": "Input", "name": "quantity", "inputType": "number"}]})
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(result["preview"]["children"][1]["key"], "order")
+
     def test_invalid_controls_and_duplicate_form_fields(self) -> None:
         for control in (
             {"type": "Input", "name": "quantity", "inputType": "number", "defaultValue": "100"},
