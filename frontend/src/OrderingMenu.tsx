@@ -1,16 +1,15 @@
-import { useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import type { Card, Cart, Menu, Node } from "./api";
 
-type QuantityEdit = { value: string; cartRevision: string; actionId: string };
+export type QuantityEdit = { value: string; cartRevision: string; actionId: string };
 export type CartChange = { itemId: string; quantity: number; cartRevision: string; actionId: string };
 type QuantityEditorProps = {
   item: Menu["items"][number]; cart: Cart; locale: "en" | "ar"; disabled: boolean;
+  edit: QuantityEdit | null; setEdit: (edit: QuantityEdit | null) => void;
   onChange: (change: CartChange) => Promise<boolean>;
 };
 
-function QuantityEditor({ item, cart, locale, disabled, onChange }: QuantityEditorProps): ReactElement {
-  const [edit, setEdit] = useState<QuantityEdit | null>(null);
+function QuantityEditor({ item, cart, locale, disabled, edit, setEdit, onChange }: QuantityEditorProps): ReactElement {
   const quantity: number = cart.items.find((entry) => entry.id === item.id)?.quantity ?? 0;
   const value: string = edit?.value ?? String(quantity);
   const stale: boolean = edit !== null && edit.cartRevision !== cart.revision;
@@ -45,15 +44,16 @@ function QuantityEditor({ item, cart, locale, disabled, onChange }: QuantityEdit
 
 type OrderingMenuProps = {
   menu: Menu; cart: Cart; card: Card; locale: "en" | "ar"; disabled: boolean; error: string;
+  edits: Readonly<Record<string, QuantityEdit>>; onEdit: (itemId: string, edit: QuantityEdit | null) => void;
   onChange: (change: CartChange) => Promise<boolean>; renderNode: (node: Node) => ReactElement;
 };
 
-export function OrderingMenu({ menu, cart, card, locale, disabled, error, onChange, renderNode }: OrderingMenuProps): ReactElement {
+export function OrderingMenu({ menu, cart, card, locale, disabled, error, edits, onEdit, onChange, renderNode }: OrderingMenuProps): ReactElement {
   if (card.kind !== "list" || card.children.length !== menu.items.length) throw new Error("The ordering menu does not match its authoritative dish rows.");
   return <div className="ordering-menu">
     {menu.items.map((item, index) => <div className="ordering-item" key={item.id}>
       {renderNode(card.children[index])}
-      <QuantityEditor item={item} cart={cart} locale={locale} disabled={disabled} onChange={onChange} />
+      <QuantityEditor item={item} cart={cart} locale={locale} disabled={disabled} edit={edits[item.id] ?? null} setEdit={(edit: QuantityEdit | null) => onEdit(item.id, edit)} onChange={onChange} />
     </div>)}
     <p>{locale === "ar" ? "إجمالي الأصناف المختارة" : "Selected items total"}: <bdi>AED {(cart.total_minor / 100).toFixed(2)}</bdi></p>
     {error && <p className="notice" role="alert">{error}</p>}

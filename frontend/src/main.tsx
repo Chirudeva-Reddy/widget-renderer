@@ -6,7 +6,7 @@ import { ConfirmationConflict, confirmOrder, fetchCart, fetchMenu, parseSnapshot
 import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult } from "./api";
 import { Chart } from "./Chart";
 import { OrderingMenu } from "./OrderingMenu";
-import type { CartChange } from "./OrderingMenu";
+import type { CartChange, QuantityEdit } from "./OrderingMenu";
 import { PreviewControl } from "./PreviewControl";
 import "./style.css";
 
@@ -68,6 +68,7 @@ function App(): ReactElement {
   const [menuPending, setMenuPending] = useState<boolean>(false);
   const [cart, setCart] = useState<Cart | null>(null);
   const [cartError, setCartError] = useState<string>("");
+  const [quantityEdits, setQuantityEdits] = useState<Readonly<Record<string, QuantityEdit>>>({});
   const [cartPending, setCartPending] = useState<boolean>(false);
   const [order, setOrder] = useState<Order | null>(null);
   const [chatText, setChatText] = useState<string>("");
@@ -182,6 +183,13 @@ function App(): ReactElement {
     connect();
     return () => { active = false; source?.close(); if (retry !== null) window.clearTimeout(retry); if (heartbeat !== null) window.clearTimeout(heartbeat); };
   }, [sessionReady]);
+
+  function editQuantity(itemId: string, edit: QuantityEdit | null): void {
+    setQuantityEdits((current: Readonly<Record<string, QuantityEdit>>) => {
+      const { [itemId]: removed, ...remaining } = current;
+      return edit === null ? remaining : { ...remaining, [itemId]: edit };
+    });
+  }
 
   async function changeQuantity({ itemId, quantity, cartRevision, actionId }: CartChange): Promise<boolean> {
     if (cart === null || cartPending || confirmation !== null) return false;
@@ -303,7 +311,7 @@ function App(): ReactElement {
     <section className="panel menu-panel" aria-labelledby="chat-title">
       <div className="menu-heading"><div><span className="step">RESTAURANT ASSISTANT / المساعد</span><h2 id="chat-title">Ask about the menu</h2></div><div><label htmlFor="chat-language">Language </label><select id="chat-language" value={chatLocale} onChange={(event) => setChatLocale(event.target.value as "en" | "ar")}><option value="en">English</option><option value="ar">العربية</option></select></div></div>
       <p className="menu-help">Ask in English or Arabic. Suggested cart changes require your approval.</p>
-      <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && message.widget && <div className="chat-widget" lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && menuWidgets && menu && cart ? <OrderingMenu menu={menu} cart={cart} card={menuWidgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || !live} error={cartError} onChange={changeQuantity} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}</div>
+      <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && message.widget && <div className="chat-widget" lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && menuWidgets && menu && cart ? <OrderingMenu menu={menu} cart={cart} card={menuWidgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onChange={changeQuantity} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}</div>
       {chatError && <p className="notice" role="alert">{chatError}</p>}
       <form className="chat-form" onSubmit={(event) => { void submitChat(event); }}><label htmlFor="chat-input">Your message</label><textarea id="chat-input" value={chatText} onChange={(event) => setChatText(event.target.value)} maxLength={2000} rows={2} /><button type="submit" disabled={chatPending || !live || !chatText.trim()}>{chatPending ? "Thinking…" : "Send message"}</button></form>
     </section>
