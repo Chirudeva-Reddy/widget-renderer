@@ -42,12 +42,13 @@ export function ConfirmationRecovery({ locale, disabled, error, onRetry }: { loc
   </section>;
 }
 
-export function OrderReceipt({ order, locale, onStart }: { order: Order; locale: Locale; onStart: () => void }): ReactElement {
+export function OrderReceipt({ order, locale, disabled, onStart }: { order: Order; locale: Locale; disabled: boolean; onStart: () => void }): ReactElement {
   const arabic: boolean = locale === "ar";
   return <section className="widget-card checkout-card" aria-label={arabic ? "إيصال الطلب" : "Order receipt"} lang={locale} dir={arabic ? "rtl" : "ltr"}>
     <h3 role="status">{arabic ? "تم تأكيد الطلب" : "Order confirmed"} · <bdi>{order.order_id}</bdi></h3>
     <OrderLines items={order.items} locale={locale} />
     <p>{arabic ? "الإجمالي" : "Total"}: <bdi>AED {(order.total_minor / 100).toFixed(2)}</bdi></p>
-    <button type="button" onClick={onStart}>{arabic ? "بدء طلب آخر" : "Start another order"}</button>
+    {disabled && <p className="notice" role="status">{arabic ? "جارٍ مزامنة السلة قبل بدء طلب آخر." : "Synchronizing your cart before starting another order."}</p>}
+    <button type="button" disabled={disabled} onClick={onStart}>{arabic ? "بدء طلب آخر" : "Start another order"}</button>
   </section>;
 }
