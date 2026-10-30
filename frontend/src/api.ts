@@ -128,3 +128,31 @@ export async function confirmOrder(actionId: string, cartRevision: string): Prom
   const payload: unknown = await response.json();
   return orderSchema.parse(payload);
 }
+
+const snapshotSchema = z.object({ menu: menuSchema, cart: cartSchema }).strict();
+export type Snapshot = z.infer<typeof snapshotSchema>;
+export function parseSnapshot(source: string): Snapshot {
+  const payload: unknown = JSON.parse(source);
+  return snapshotSchema.parse(payload);
+}
+
+const chatReplySchema = z.object({
+  text: z.string().min(1).max(1200),
+  suggestion: z.object({ item_id: z.string(), quantity: z.number().int().min(0).max(99) }).strict().nullable(),
+  menu_revision: z.number().int().positive(), cart_revision: z.string().length(64),
+  widget: cardSchema.nullable(), locale: z.enum(["en", "ar"]),
+}).strict();
+export type ChatReply = z.infer<typeof chatReplySchema>;
+export async function sendChat(text: string, menuRevision: number, messageId: string, locale: "en" | "ar"): Promise<ChatReply> {
+  const response: Response = await fetch("/api/chat", {
+    method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "chat" },
+    body: JSON.stringify({ text, menu_revision: menuRevision, client_message_id: messageId, locale }),
+  });
+  if (!response.ok) {
+    const payload: unknown = await response.json();
+    const error = z.object({ message: z.string() }).safeParse(payload);
+    throw new Error(error.success ? error.data.message : `Chat request failed (${response.status}).`);
+  }
+  const payload: unknown = await response.json();
+  return chatReplySchema.parse(payload);
+}

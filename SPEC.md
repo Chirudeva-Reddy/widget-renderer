@@ -207,6 +207,8 @@ On every new/reconnected SSE subscription, register the listener and capture an 
 
 ## Model contract
 
+The initial local chat uses OpenRouter structured output for assistant text, a menu display request, and at most one cart-quantity suggestion. The response language is selected explicitly in the interface and defaults to English. For menu requests, the backend builds a widget from the SQLite menu, validates it, and returns the safe preview alongside the text. The widget is a historical snapshot and is marked outdated if inventory changes. A suggestion is shown with the item and quantity and requires an explicit customer click; it is not executed by the model. The backend checks the session, current menu revision, item identity and availability, and the frontend disables suggestions after the menu or cart changes. This increment does not yet implement model-authored widgets, chat history, the full intent envelope, or acknowledged widget snapshots.
+
 Call OpenRouter from the backend using asynchronous HTTP: `POST https://openrouter.ai/api/v1/chat/completions`, bearer authorization from `OPEN_ROUTE_API_KEY`, and the configured model ID. The proposed initial `OPENROUTER_MODEL` is `openai/gpt-4.1-mini`; that ID and its structured-output/tool parameters were present in the public provider catalogue during review. Account access, successful execution, latency, and cost have not been verified. Confirm the model with one authorized preflight call before depending on it; do not silently switch providers or models.
 
 Use a structured model reply with `text`, `intents`, and `widgets`. Each intent has an allowlisted type and typed arguments. Each optional direct widget proposal contains a runtime tree and an explicit target role or existing owned widget ID. The backend interprets validated intents, builds authoritative menu/confirmation widgets, and emits the application envelopes above. A model proposal never assigns a server revision or confirms an order by itself. `order.confirm` requires the customer's explicit current confirmation action. Direct model-authored trees go through the same validation and binding pipeline as backend-authored trees and pasted fixtures.
@@ -241,9 +243,13 @@ Provider reference: [OpenRouter chat completions](https://openrouter.ai/docs/api
 
 ## Live update transport
 
+### Local inventory stream
+
+The user selected SSE for the local demo. `GET /api/events` requires the anonymous session and streams a menu-and-cart snapshot read in a single SQLite transaction immediately on connection and every second thereafter. Each snapshot refreshes inventory and the owning session's cart. Reconnecting starts with a new snapshot; the browser pauses confirmation until a valid snapshot arrives and while the connection is lost or its heartbeat expires. The stream currently covers menu and cart state, not widget revisions or chat events. Each connection reads SQLite independently; there is no event replay queue in this slice.
+
 ### Proposed starting choice
 
-The user accepted SSE or WebSockets and requested documented tradeoffs. SSE with ordinary HTTP requests for user messages and actions is the proposed starting choice. The user has not exclusively selected either transport. WebSockets remain an alternative; implementing both or switching automatically between them is outside the current proposal.
+The user selected SSE with ordinary HTTP requests for user messages and actions. WebSockets remain an alternative if requirements change; implementing both or switching automatically between them is outside the current scope.
 
 SSE fits the current flow because availability changes, widget revisions, and future model response events primarily travel from the backend to the browser. The browser can send its comparatively occasional actions through HTTP endpoints. WebSockets become more relevant if frequent communication in both directions becomes a requirement.
 

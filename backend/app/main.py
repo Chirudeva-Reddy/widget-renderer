@@ -1,3 +1,4 @@
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
@@ -7,7 +8,10 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.cart import CartError, SessionError, confirm_order, create_session, get_cart, initialize_cart, initialize_orders, set_quantity
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from app.events import read_snapshot
+from app.chat import ChatError, ProviderError, initialize_chat, respond
 
 from app.menu import DATABASE_PATH, ItemNotFoundError, MenuResponse, get_menu, initialize_menu, restock_item, sell_out_item
 from app.validator import InvalidSource, ValidationResult, unique_object, validate_source
@@ -17,6 +21,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     initialize_menu(DATABASE_PATH)
     initialize_cart(DATABASE_PATH)
     initialize_orders(DATABASE_PATH)
+    initialize_chat(DATABASE_PATH)
     yield
 
 
@@ -97,6 +102,51 @@ def order_confirm(payload: ConfirmOrderRequest, request: Request) -> JSONRespons
         return error_response(401, "session_required", "Start a session to confirm your order.")
     except CartError as error:
         return error_response(409, "order_conflict", str(error))
+
+
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    client_message_id: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=2000)
+    menu_revision: int = Field(ge=1)
+    locale: Literal["en", "ar"]
+
+
+@app.post("/api/chat", response_model=None)
+async def chat(payload: ChatRequest, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "chat"):
+        return error_response(403, "invalid_origin", "Chat requires the local application.")
+    try:
+        reply = await respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale)
+        return JSONResponse(content=reply)
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to use chat.")
+    except ChatError as error:
+        return error_response(409, "chat_conflict", str(error))
+    except ProviderError as error:
+        return error_response(502, "provider_error", str(error))
+
+@app.get("/api/events", response_model=None)
+async def events(request: Request) -> StreamingResponse | JSONResponse:
+    token: str = request.cookies.get("restaurant_session", "")
+    try:
+        initial = await asyncio.to_thread(read_snapshot, DATABASE_PATH, token)
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to receive updates.")
+
+    async def stream() -> AsyncIterator[str]:
+        snapshot = initial
+        while True:
+            yield f"event: snapshot\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(1)
+            try:
+                snapshot = await asyncio.to_thread(read_snapshot, DATABASE_PATH, token)
+            except SessionError:
+                yield 'event: session_expired\ndata: {}\n\n'
+                return
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
 @app.post("/api/demo/menu/{item_id}/sell-out", response_model=None)
 def sell_out(item_id: str, request: Request) -> MenuResponse | JSONResponse:

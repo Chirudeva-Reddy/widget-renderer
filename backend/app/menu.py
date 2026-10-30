@@ -45,20 +45,24 @@ def initialize_menu(path: Path) -> None:
         )
 
 
+def read_menu(connection: sqlite3.Connection) -> MenuResponse:
+    metadata = connection.execute("SELECT revision FROM menu_metadata WHERE id = 1").fetchone()
+    if metadata is None:
+        raise RuntimeError("Menu metadata is missing; initialize the restaurant database.")
+    rows = connection.execute("SELECT id, position, name_en, name_ar, price_minor, available FROM menu_items ORDER BY position").fetchall()
+    return {
+        "revision": metadata[0],
+        "items": [
+            {"id": row[0], "position": row[1], "name": {"en": row[2], "ar": row[3]}, "price_minor": row[4], "currency": "AED", "available": bool(row[5])}
+            for row in rows
+        ],
+    }
+
+
 def get_menu(path: Path) -> MenuResponse:
     with sqlite3.connect(path) as connection:
         connection.execute("BEGIN")
-        metadata = connection.execute("SELECT revision FROM menu_metadata WHERE id = 1").fetchone()
-        if metadata is None:
-            raise RuntimeError("Menu metadata is missing; initialize the restaurant database.")
-        rows = connection.execute("SELECT id, position, name_en, name_ar, price_minor, available FROM menu_items ORDER BY position").fetchall()
-        return {
-            "revision": metadata[0],
-            "items": [
-                {"id": row[0], "position": row[1], "name": {"en": row[2], "ar": row[3]}, "price_minor": row[4], "currency": "AED", "available": bool(row[5])}
-                for row in rows
-            ],
-        }
+        return read_menu(connection)
 
 
 def sell_out_item(path: Path, item_id: str) -> MenuResponse:
