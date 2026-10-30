@@ -23,10 +23,9 @@ class ConfirmationActionBinding(TypedDict):
 
 
 class CheckoutView(TypedDict):
-    """Immutable review whose sequence orders issuance separately from widget revisions."""
+    sequence: int
     kind: Literal["widget"]
     role: Literal["confirmation"]
-    sequence: int
     payload: ConfirmationPayloads
     actions: list[ConfirmationActionBinding]
     cart_revision: str
@@ -53,6 +52,24 @@ def read_latest_confirmation_status(connection: sqlite3.Connection, session_hash
     return None if row is None else {"widget_id": row[0], "revision": 1, "sequence": row[1], "active": row[3] == 0 and row[2] == cart_revision}
 
 
+def validate_confirmation_rendered(view: CheckoutView, rendered: dict[str, object], locale: Literal["en", "ar"]) -> None:
+    rows = rendered.get("rows")
+    if rendered.get("locale") != locale or not isinstance(rows, list) or len(rows) != len(view["cart"]["items"]):
+        raise ConfirmationViewError("Rendered confirmation does not match the issued review.")
+    for row, item in zip(rows, view["cart"]["items"], strict=True):
+        if not isinstance(row, dict) or row.get("item_id") != item["id"] or row.get("quantity") != item["quantity"] or row.get("sold_out") != (not item["available"]):
+            raise ConfirmationViewError("Rendered confirmation does not match the issued review.")
+    issues = cast(list[str], rendered["issues"])
+    if len(set(issues)) != len(issues):
+        raise ConfirmationViewError("Rendered confirmation has duplicate issues.")
+    edit_enabled: bool = any(action["type"] == "order.edit" and action["enabled"] for action in view["actions"])
+    confirm_enabled: bool = any(action["type"] == "order.confirm" and action["enabled"] for action in view["actions"])
+    if rendered["edit_disabled"] != ("disconnected" in issues or not edit_enabled):
+        raise ConfirmationViewError("Rendered edit control does not match the reported state.")
+    if rendered["confirm_disabled"] != (bool(issues) or not view["cart"]["can_checkout"] or not confirm_enabled):
+        raise ConfirmationViewError("Rendered confirmation enables an unavailable control.")
+
+
 def read_confirmation_view(connection: sqlite3.Connection, session_hash: str, reference: ConfirmationReference) -> CheckoutView:
     """Resolve only a confirmation envelope issued to this session."""
     row: tuple[str | None] | None = connection.execute("SELECT envelope_json FROM checkout_views WHERE id = ? AND session_hash = ?", (reference["widget_id"], session_hash)).fetchone()
@@ -61,12 +78,13 @@ def read_confirmation_view(connection: sqlite3.Connection, session_hash: str, re
     return cast(CheckoutView, json.loads(row[0]))
 
 
-def acknowledge_confirmation(path: Path, token: str, reference: ConfirmationReference, locale: Literal["en", "ar"]) -> CheckoutView:
+def acknowledge_confirmation(path: Path, token: str, reference: ConfirmationReference, locale: Literal["en", "ar"], rendered: dict[str, object]) -> CheckoutView:
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
         session_hash: str = require_session(connection, token)
         view: CheckoutView = read_confirmation_view(connection, session_hash, reference)
-        connection.execute("INSERT INTO confirmation_acknowledgements (widget_id, locale, revision) VALUES (?, ?, ?) ON CONFLICT(widget_id, locale) DO UPDATE SET revision = MAX(revision, excluded.revision)", (reference["widget_id"], locale, reference["revision"]))
+        validate_confirmation_rendered(view, rendered, locale)
+        connection.execute("INSERT INTO confirmation_acknowledgements (widget_id, locale, revision, rendered_json) VALUES (?, ?, ?, ?) ON CONFLICT(widget_id, locale) DO UPDATE SET revision = excluded.revision, rendered_json = excluded.rendered_json WHERE excluded.revision >= confirmation_acknowledgements.revision", (reference["widget_id"], locale, reference["revision"], json.dumps(rendered, ensure_ascii=False)))
         return view
 
 

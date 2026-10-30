@@ -1,8 +1,9 @@
 import json
-from typing import Literal, NoReturn, NotRequired, TypedDict
+from typing import Literal, NoReturn, NotRequired, TypedDict, cast
 
 from app.chart import ChartLimitError, ChartNode, validate_chart
 from app.controls import ControlNode, validate_control
+from app.presentation import Appearance, attach_presentation, prepare_presentation
 
 
 class Issue(TypedDict):
@@ -12,31 +13,42 @@ class Issue(TypedDict):
     message: str
 
 
-class TextNode(TypedDict):
+class PresentedNode(TypedDict):
+    appearance: NotRequired[Appearance]
+
+
+class TextNode(PresentedNode):
     kind: Literal["text", "title", "caption"]
     value: str
     weight: NotRequired[Literal["normal", "medium", "semibold", "bold"]]
+    color: NotRequired[str]
+    size: NotRequired[str]
+    textAlign: NotRequired[Literal["start", "center", "end"]]
+    italic: NotRequired[bool]
+    lineThrough: NotRequired[bool]
 
 
-class BadgeNode(TypedDict):
+class BadgeNode(PresentedNode):
     kind: Literal["badge"]
     label: str
+    color: NotRequired[Literal["secondary", "success", "danger", "warning", "info", "discovery"]]
+    variant: NotRequired[Literal["solid", "soft", "outline"]]
 
 
-class DividerNode(TypedDict):
+class DividerNode(PresentedNode):
     kind: Literal["divider"]
 
 
-class SpacerNode(TypedDict):
+class SpacerNode(PresentedNode):
     kind: Literal["spacer"]
 
 
-class ProblemNode(TypedDict):
+class ProblemNode(PresentedNode):
     kind: Literal["problem"]
     message: str
 
 
-class ContainerNode(TypedDict):
+class ContainerNode(PresentedNode):
     kind: Literal["card", "list", "list_item", "row", "col", "form", "box"]
     children: list["Node"]
     gap: NotRequired[int]
@@ -46,6 +58,33 @@ class ContainerNode(TypedDict):
     justify: NotRequired[Literal["start", "center", "end", "between", "around", "evenly", "stretch"]]
     padding: NotRequired[int]
     flex: NotRequired[int]
+    background: NotRequired[str]
+    radius: NotRequired[str]
+
+
+# ponytail: ChatKit design tokens only; CSS strings, primitive colours and { light, dark } objects are dropped with a warning so model output cannot inject styles.
+TEXT_COLORS: tuple[str, ...] = ("prose", "primary", "emphasis", "secondary", "tertiary", "success", "warning", "danger")
+TEXT_TOKENS: dict[str, dict[str, tuple[object, ...]]] = {
+    "Text": {"color": TEXT_COLORS, "size": ("xs", "sm", "md", "lg", "xl"), "textAlign": ("start", "center", "end"), "italic": (True, False), "lineThrough": (True, False)},
+    "Title": {"color": TEXT_COLORS, "size": ("sm", "md", "lg", "xl", "2xl", "3xl", "4xl", "5xl"), "textAlign": ("start", "center", "end")},
+    "Caption": {"color": TEXT_COLORS, "size": ("sm", "md", "lg"), "textAlign": ("start", "center", "end")},
+}
+BADGE_TOKENS: dict[str, tuple[object, ...]] = {"color": ("secondary", "success", "danger", "warning", "info", "discovery"), "variant": ("solid", "soft", "outline")}
+BOX_TOKENS: dict[str, tuple[object, ...]] = {
+    "background": ("surface", "surface-secondary", "surface-tertiary", "surface-elevated", "surface-elevated-secondary", "alpha-10", "alpha-15", "orange-400"),
+    "radius": ("none", "2xs", "xs", "sm", "md", "lg", "xl", "2xl", "3xl", "4xl", "full"),
+}
+
+
+def copy_tokens(source: dict[str, object], target: dict[str, object], tokens: dict[str, tuple[object, ...]], path: str, issues: list["Issue"]) -> None:
+    for prop, values in tokens.items():
+        if prop not in source:
+            continue
+        value: object = source[prop]
+        if any(value is allowed if isinstance(allowed, bool) else (isinstance(value, str) and value == allowed) for allowed in values):
+            target[prop] = value
+        else:
+            issues.append(issue("invalid_property", f"{path}.{prop}", "warning", f"{prop} must be one of the supported ChatKit tokens."))
 
 
 class TableCell(TypedDict):
@@ -58,7 +97,7 @@ class TableRow(TypedDict):
     cells: list[TableCell]
 
 
-class TableNode(TypedDict):
+class TableNode(PresentedNode):
     kind: Literal["table"]
     rows: list[TableRow]
 
@@ -150,7 +189,9 @@ def validate_source(source: str) -> ValidationResult:
     if root_type not in ("Card", "ListView") or not isinstance(data.get("children"), list):
         return invalid("invalid_root", "The root must be a Card or ListView with a children array.")
     try:
-        preview, issues = validate_container(data, "$", str(root_type))
+        prepared, appearances = prepare_presentation(data, "$")
+        preview, issues = validate_container(prepared, "$", str(root_type))
+        preview = cast(ContainerNode, attach_presentation(cast(dict[str, object], preview), appearances, "$"))
         if count_nodes(preview) > 1000:
             raise InvalidSource("Widget exceeds the node limit.")
     except InvalidSource as error:
@@ -174,7 +215,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
     seen_keys: set[str] = set()
     supported: set[str] = {"type", "children", "key"}
     if component in ("Row", "Col", "Box"):
-        supported |= {"gap", "padding", "flex", "align", "justify"}
+        supported |= {"gap", "padding", "flex", "align", "justify", *BOX_TOKENS}
     if component == "Box":
         supported.add("direction")
     if component == "ListViewItem":
@@ -212,7 +253,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             if len(value) > 4096:
                 raise InvalidSource("Text exceeds the size limit.")
             for prop in child:
-                if prop not in {"type", "value", "key", "weight"}:
+                if prop not in {"type", "value", "key", "weight", *TEXT_TOKENS[str(child_type)]}:
                     issues.append(issue("unsupported_property", f"{child_path}.{prop}", "warning", "Property is not supported."))
             child_key_value: object = child.get("key")
             if child_key_value is not None and not isinstance(child_key_value, str):
@@ -224,6 +265,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
                 text_node["weight"] = weight
             elif "weight" in child:
                 issues.append(issue("invalid_property", f"{child_path}.weight", "warning", "Weight is not supported."))
+            copy_tokens(child, cast(dict[str, object], text_node), TEXT_TOKENS[str(child_type)], child_path, issues)
             nodes.append(text_node)
         elif child_type in ("Button", "Input", "Select"):
             control, control_issues = validate_control(child, child_path)
@@ -259,11 +301,13 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             if len(label) > 4096:
                 raise InvalidSource("Badge label exceeds the size limit.")
             for prop in child:
-                if prop not in {"type", "label", "key"}:
+                if prop not in {"type", "label", "key", *BADGE_TOKENS}:
                     issues.append(issue("unsupported_property", f"{child_path}.{prop}", "warning", "Property is not supported."))
             if child.get("key") is not None and not isinstance(child.get("key"), str):
                 issues.append(issue("invalid_key", f"{child_path}.key", "warning", "Key must be a string or null."))
-            nodes.append({"kind": "badge", "label": label})
+            badge: BadgeNode = {"kind": "badge", "label": label}
+            copy_tokens(child, cast(dict[str, object], badge), BADGE_TOKENS, child_path, issues)
+            nodes.append(badge)
         elif child_type == "Spacer":
             for prop in child:
                 if prop not in {"type", "key"}:
@@ -312,6 +356,8 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
                     container[prop] = value
                 else:
                     issues.append(issue("invalid_property", f"{path}.{prop}", "warning", f"{prop} is not supported."))
+    if component in ("Row", "Col", "Box"):
+        copy_tokens(data, cast(dict[str, object], container), BOX_TOKENS, path, issues)
     if component == "Box" and "direction" in data:
         direction: object = data["direction"]
         if direction in ("row", "col"):

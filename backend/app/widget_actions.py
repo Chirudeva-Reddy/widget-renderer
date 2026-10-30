@@ -3,11 +3,11 @@ import secrets
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 
-from app.cart import Cart, Order, confirm_session_order, read_cart, require_session, set_session_quantity
+from app.cart import Cart, Order, confirm_session_order, read_cart, record_completed_action, require_session, set_session_quantity
 from app.confirmation_widget import CheckoutView, build_confirmation_widget, read_confirmation_view
-from app.menu import read_menu
+from app.menu import MenuResponse, read_menu
 from app.widgets import WidgetEnvelope
 
 
@@ -20,6 +20,15 @@ class QuantityAction(TypedDict):
     position: int
     quantity: int
     cart_revision: str
+
+
+class ItemAction(TypedDict):
+    widget_id: str
+    revision: int
+    action_id: str
+    type: str
+    item_id: str
+    position: int
 
 
 class WidgetActionError(ValueError):
@@ -36,6 +45,71 @@ class StaleWidget(WidgetActionError):
 
 class DisabledWidgetAction(WidgetActionError):
     pass
+
+class GenericBinding(TypedDict):
+    key: str
+    type: Literal["cart.add", "cart.remove", "cart.set_quantity"]
+    item_id: str
+    position: int
+    enabled: bool
+    label: str
+    quantities: NotRequired[list[int]]
+
+
+class GenericWidget(TypedDict):
+    widget_id: str
+    revision: int
+    menu_revision: int
+    cart_revision: str
+    bindings: list[GenericBinding]
+
+
+def bind_generic_actions(tree: dict[str, object], menu: MenuResponse, cart: Cart, locale: Literal["en", "ar"]) -> list[GenericBinding]:
+    """Bind keyed buttons only to known, currently permitted menu actions."""
+    bindings: list[GenericBinding] = []
+    seen: set[str] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+        elif isinstance(value, dict):
+            if value.get("type") in ("Button", "Form", "Select") and isinstance(value.get("key"), str) and str(value["key"]).startswith("action:"):
+                key = value.get("key")
+                if not isinstance(key, str) or key in seen:
+                    raise WidgetActionError("Widget buttons require unique action bindings.")
+                parts: list[str] = key.split(":", 2)
+                if len(parts) != 3 or parts[0] != "action" or parts[1] not in ("cart.add", "cart.remove", "cart.set_quantity"):
+                    raise WidgetActionError("Widget button has an unsupported action binding.")
+                item = next((item for item in menu["items"] if item["id"] == parts[2]), None)
+                if item is None:
+                    raise WidgetActionError("Widget button refers to an unknown item.")
+                quantity: int = next((entry["quantity"] for entry in cart["items"] if entry["id"] == item["id"]), 0)
+                kind = cast(Literal["cart.add", "cart.remove", "cart.set_quantity"], parts[1])
+                label: str = ("إضافة" if kind == "cart.add" else "إزالة") if locale == "ar" else ("Add" if kind == "cart.add" else "Remove")
+                bindings.append({"key": key, "type": kind, "item_id": item["id"], "position": item["position"], "enabled": item["available"] and quantity < 99 if kind == "cart.add" else quantity > 0, "label": f"{label} {item['name'][locale]}"})
+                if kind == "cart.set_quantity":
+                    fields = value.get("children", []) if value.get("type") == "Form" else [value]
+                    quantity_fields = [field for field in fields if isinstance(field, dict) and field.get("type") in ("Input", "Select")]
+                    if len(quantity_fields) != 1 or quantity_fields[0].get("name") != "quantity" or quantity_fields[0].get("disabled", False):
+                        raise WidgetActionError("Quantity actions require one enabled quantity field.")
+                    field = quantity_fields[0]
+                    allowed: list[int] = list(range(100))
+                    if field.get("type") == "Select":
+                        options = field.get("options", [])
+                        if not isinstance(options, list) or any(not isinstance(option, dict) or not str(option.get("value", "")).isascii() or not str(option.get("value", "")).isdigit() or int(str(option["value"])) > 99 for option in options):
+                            raise WidgetActionError("Quantity options must be integers between 0 and 99.")
+                        allowed = [int(str(option["value"])) for option in options if not option.get("disabled", False)]
+                    bindings[-1]["quantities"] = allowed
+                    bindings[-1]["enabled"] = bool(allowed)
+                    bindings[-1]["label"] = "تطبيق الكمية" if locale == "ar" else "Apply quantity"
+                bindings[-1]["enabled"] = bindings[-1]["enabled"] and not value.get("disabled", False)
+                seen.add(key)
+            for child in value.values():
+                visit(child)
+
+    visit(tree)
+    return bindings
 
 
 class LocaleAction(TypedDict):
@@ -74,6 +148,7 @@ def set_widget_locale(path: Path, token: str, action: LocaleAction) -> LocaleRes
         result: LocaleResult = {"locale": action["lang"]}
         connection.execute("INSERT INTO session_preferences (session_hash, locale) VALUES (?, ?) ON CONFLICT(session_hash) DO UPDATE SET locale = excluded.locale", (session_hash, action["lang"]))
         connection.execute("INSERT INTO widget_actions VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request, json.dumps(result)))
+        record_completed_action(connection, session_hash, action["action_id"], "locale.set", read_cart(connection, session_hash)["revision"])
         return result
 
 
@@ -84,10 +159,21 @@ def initialize_widget_actions(path: Path) -> None:
         if "envelope_json" not in columns:
             connection.execute("ALTER TABLE checkout_views ADD COLUMN envelope_json TEXT")
         connection.execute("CREATE TABLE IF NOT EXISTS confirmation_acknowledgements (widget_id TEXT NOT NULL, locale TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(widget_id, locale))")
+        acknowledgement_columns: set[str] = {row[1] for row in connection.execute("PRAGMA table_info(confirmation_acknowledgements)")}
+        if "rendered_json" not in acknowledgement_columns:
+            connection.execute("ALTER TABLE confirmation_acknowledgements ADD COLUMN rendered_json TEXT")
         connection.execute("CREATE TABLE IF NOT EXISTS widget_actions (session_hash TEXT NOT NULL, action_id TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(session_hash, action_id))")
+        connection.execute("CREATE TABLE IF NOT EXISTS generic_widgets (id TEXT PRIMARY KEY, session_hash TEXT NOT NULL, revision INTEGER NOT NULL, menu_revision INTEGER NOT NULL, cart_revision TEXT NOT NULL, bindings_json TEXT NOT NULL)")
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(generic_widgets)")}
+        if "payload_json" not in columns:
+            connection.execute("ALTER TABLE generic_widgets ADD COLUMN payload_json TEXT")
+        if "rendered_json" not in columns:
+            connection.execute("ALTER TABLE generic_widgets ADD COLUMN rendered_json TEXT")
+        if "role" not in columns:
+            connection.execute("ALTER TABLE generic_widgets ADD COLUMN role TEXT")
 
 
-def apply_widget_quantity(path: Path, token: str, action: QuantityAction) -> Cart:
+def apply_widget_quantity(path: Path, token: str, action: QuantityAction | ItemAction) -> Cart:
     """Verify the issued menu and apply its quantity action atomically."""
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -101,15 +187,39 @@ def apply_widget_quantity(path: Path, token: str, action: QuantityAction) -> Car
         if connection.execute("SELECT 1 FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action["action_id"])).fetchone() is not None:
             raise ActionIdConflict("Action ID was already used for a different request.")
         row: tuple[int, str] | None = connection.execute("SELECT r.revision, r.envelope_json FROM widgets w JOIN widget_revisions r ON r.widget_id = w.id WHERE w.id = ? AND w.session_hash = ? ORDER BY r.revision DESC LIMIT 1", (action["widget_id"], session_hash)).fetchone()
-        if row is None or row[0] != action["revision"]:
+        cart: Cart = read_cart(connection, session_hash)
+        if row is None:
+            generic = connection.execute("SELECT revision, menu_revision, cart_revision, bindings_json FROM generic_widgets WHERE id = ? AND session_hash = ?", (action["widget_id"], session_hash)).fetchone()
+            if generic is None or generic[0] != action["revision"] or generic[1] != read_menu(connection)["revision"] or generic[2] != cart["revision"]:
+                raise StaleWidget("Widget is unknown or out of date. Refresh the widget and try again.")
+            bindings: list[GenericBinding] = json.loads(generic[3])
+            if not any(binding["type"] == action["type"] and binding["item_id"] == action["item_id"] and binding["position"] == action["position"] and binding["enabled"] for binding in bindings):
+                raise DisabledWidgetAction("The action is not enabled for this widget.")
+            current: int = next((item["quantity"] for item in cart["items"] if item["id"] == action["item_id"]), 0)
+            quantity: int = action["quantity"] if "quantity" in action else current + 1 if action["type"] == "cart.add" else 0
+            if "cart_revision" in action and action["cart_revision"] != generic[2]:
+                raise StaleWidget("The cart revision does not match this widget.")
+            if action["type"] == "cart.set_quantity" and not any(binding["type"] == action["type"] and binding["item_id"] == action["item_id"] and quantity in binding.get("quantities", []) for binding in bindings):
+                raise DisabledWidgetAction("Quantity is not enabled for this widget.")
+            result: Cart = set_session_quantity(connection, session_hash, action["action_id"], action["item_id"], quantity, generic[2])
+            connection.execute("INSERT INTO widget_actions (session_hash, action_id, request_json, result_json) VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request_json, json.dumps(result, ensure_ascii=False)))
+            connection.execute("UPDATE completed_actions SET kind = ? WHERE session_hash = ? AND action_id = ?", (action["type"], session_hash, action["action_id"]))
+            return result
+        if row[0] != action["revision"]:
             raise StaleWidget("Widget is unknown or out of date. Refresh the menu and try again.")
         envelope: WidgetEnvelope = cast(WidgetEnvelope, json.loads(row[1]))
-        if read_menu(connection)["revision"] != envelope["menu"]["revision"] or read_cart(connection, session_hash)["revision"] != envelope["cart_revision"] or action["cart_revision"] != envelope["cart_revision"]:
+        if read_menu(connection)["revision"] != envelope["menu"]["revision"] or cart["revision"] != envelope["cart_revision"] or ("cart_revision" in action and action["cart_revision"] != envelope["cart_revision"]):
             raise StaleWidget("Widget is out of date. Refresh the menu and try again.")
-        if not any(binding["item_id"] == action["item_id"] and binding["position"] == action["position"] and binding["minimum"] <= action["quantity"] <= binding["maximum"] for binding in envelope["actions"]["quantities"]):
+        current: int = next((item["quantity"] for item in cart["items"] if item["id"] == action["item_id"]), 0)
+        if action["type"] == "cart.remove" and current == 0:
+            raise DisabledWidgetAction("The selected item is not in the cart.")
+        quantity: int = action["quantity"] if "quantity" in action else current + 1 if action["type"] == "cart.add" else 0
+        if not any(binding["item_id"] == action["item_id"] and binding["position"] == action["position"] and binding["minimum"] <= quantity <= binding["maximum"] for binding in envelope["actions"]["quantities"]):
             raise DisabledWidgetAction("The selected item does not match this widget. Refresh the menu and try again.")
-        result: Cart = set_session_quantity(connection, session_hash, action["action_id"], action["item_id"], action["quantity"], action["cart_revision"])
+        result: Cart = set_session_quantity(connection, session_hash, action["action_id"], action["item_id"], quantity, envelope["cart_revision"])
         connection.execute("INSERT INTO widget_actions (session_hash, action_id, request_json, result_json) VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request_json, json.dumps(result, ensure_ascii=False)))
+        if action["type"] != "cart.set_quantity":
+            connection.execute("UPDATE completed_actions SET kind = ? WHERE session_hash = ? AND action_id = ?", (action["type"], session_hash, action["action_id"]))
         return result
 
 
@@ -152,6 +262,7 @@ def start_checkout(path: Path, token: str, action: CheckoutAction) -> CheckoutVi
         view: CheckoutView = {"kind": "widget", "role": "confirmation", "widget_id": widget_id, "revision": 1, "sequence": sequence, "actions": [{"type": "order.edit", "enabled": True}, {"type": "order.confirm", "enabled": cart["can_checkout"]}], "cart_revision": cart["revision"], "cart": cart, "payload": {"en": build_confirmation_widget(cart, "en"), "ar": build_confirmation_widget(cart, "ar")}}
         connection.execute("UPDATE checkout_views SET envelope_json = ? WHERE id = ?", (json.dumps(view, ensure_ascii=False), view["widget_id"]))
         connection.execute("INSERT INTO widget_actions VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request, json.dumps(view, ensure_ascii=False)))
+        record_completed_action(connection, session_hash, action["action_id"], "checkout.start", cart["revision"])
         return view
 
 
@@ -196,4 +307,5 @@ def edit_widget_order(path: Path, token: str, action: CheckoutAction) -> dict[st
         connection.execute("UPDATE checkout_views SET consumed = 1 WHERE id = ? AND session_hash = ?", (action["widget_id"], session_hash))
         result: dict[str, bool] = {"edited": True}
         connection.execute("INSERT INTO widget_actions VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request, json.dumps(result)))
+        record_completed_action(connection, session_hash, action["action_id"], "order.edit", read_cart(connection, session_hash)["revision"])
         return result

@@ -2,18 +2,21 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
-from typing import Literal, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.cart import CartError, SessionError, confirm_order, create_session, get_cart, initialize_cart, initialize_orders, set_quantity
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from app.generic_views import GenericReference, acknowledge_generic, read_generic_state
 from app.events import issue_menu_widget, read_snapshot
 from app.confirmation_widget import ConfirmationViewError, acknowledge_confirmation
 from app.widgets import WidgetError, acknowledge_widget, initialize_widgets
-from app.widget_actions import ActionIdConflict, DisabledWidgetAction, StaleWidget, set_widget_locale, WidgetActionError, apply_widget_quantity, confirm_widget_order, edit_widget_order, initialize_widget_actions, start_checkout
+from app.widget_actions import ActionIdConflict, DisabledWidgetAction, StaleWidget, WidgetActionError, apply_widget_quantity, confirm_widget_order, edit_widget_order, initialize_widget_actions, set_widget_locale, start_checkout
+
 from app.menu_views import MenuViewError, initialize_menu_views
 from app.chat import ChatError, ProviderError, initialize_chat, respond
 
@@ -33,6 +36,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 
 app: FastAPI = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(request: Request, error: RequestValidationError) -> Response:
+    """Return JSON-safe diagnostics without echoing untrusted request values."""
+    issues: list[dict[str, object]] = [{"type": issue["type"], "loc": issue["loc"], "msg": issue["msg"]} for issue in error.errors()]
+    return Response(status_code=422, media_type="application/json", content=json.dumps({"code": "invalid_request", "message": "Request validation failed. Check the reported fields.", "detail": issues}, ensure_ascii=True))
 
 
 class HealthResponse(TypedDict):
@@ -113,18 +123,74 @@ def order_confirm(payload: ConfirmOrderRequest, request: Request) -> JSONRespons
 
 
 
+class RenderedControls(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    input: bool
+    decrease: bool
+    increase: bool
+    apply: bool
+    remove: bool
+
+
+class RenderedRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    item_id: str = Field(min_length=1, max_length=128)
+    position: int = Field(ge=1)
+    sold_out: bool
+    placeholder: bool
+    quantity: str = Field(max_length=100)
+    draft: bool
+    edit_revision: str | None = Field(min_length=64, max_length=64)
+    changed_revision: str | None = Field(min_length=64, max_length=64)
+    disabled: bool
+    controls: RenderedControls
+    issues: list[Literal["invalid_quantity", "stale_cart", "sold_out"]] = Field(max_length=3)
+
+
+class RenderedView(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    locale: Literal["en", "ar"]
+    rows: list[RenderedRow] = Field(max_length=100)
+    checkout_disabled: bool
+
+
+class ConfirmationRenderedRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    item_id: str = Field(min_length=1, max_length=128)
+    quantity: int = Field(ge=1, le=99)
+    sold_out: bool
+
+
+class ConfirmationRenderedView(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    locale: Literal["en", "ar"]
+    rows: list[ConfirmationRenderedRow] = Field(max_length=100)
+    edit_disabled: bool
+    confirm_disabled: bool
+    issues: list[Literal["stale", "drafts", "sold_out", "disconnected"]] = Field(max_length=4)
+
+
 class WidgetViewReference(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     widget_id: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=1)
+    rendered: RenderedView
+
+
+class ConfirmationViewReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    rendered: ConfirmationRenderedView
 
 
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    generic_views: list[GenericReference] = Field(default_factory=list, max_length=100)
     client_message_id: str = Field(min_length=1, max_length=128)
     rendered_view_id: str | None = Field(min_length=1, max_length=128)
     widget_view: WidgetViewReference | None = None
-    confirmation_view: WidgetViewReference | None = None
+    confirmation_view: ConfirmationViewReference | None = None
     text: str = Field(min_length=1, max_length=2000)
     menu_revision: int = Field(ge=1)
     locale: Literal["en", "ar"]
@@ -134,12 +200,14 @@ class ChatRequest(BaseModel):
 async def chat(payload: ChatRequest, request: Request) -> JSONResponse:
     if not is_local_demo_request(request, "chat"):
         return error_response(403, "invalid_origin", "Chat requires the local application.")
+    if payload.rendered_view_id is not None and payload.widget_view is None:
+        return error_response(422, "rendered_view_required", "Include the displayed widget snapshot with the menu view.")
     try:
-        reply = await respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None if payload.confirmation_view is None else payload.confirmation_view.model_dump(), None, None if payload.widget_view is None else payload.widget_view.model_dump())
+        reply = await respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None if payload.confirmation_view is None else payload.confirmation_view.model_dump(), None, None if payload.widget_view is None else payload.widget_view.model_dump(), payload.generic_views)
         return JSONResponse(content=reply)
     except SessionError:
         return error_response(401, "session_required", "Start a session to use chat.")
-    except (ChatError, MenuViewError, ConfirmationViewError) as error:
+    except (ChatError, MenuViewError, ConfirmationViewError, WidgetActionError) as error:
         return error_response(409, "chat_conflict", str(error))
     except ProviderError as error:
         return error_response(502, "provider_error", str(error))
@@ -152,8 +220,10 @@ def sse(event: str, data: object) -> str:
 async def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse | JSONResponse:
     if not is_local_demo_request(request, "chat"):
         return error_response(403, "invalid_origin", "Chat requires the local application.")
+    if payload.rendered_view_id is not None and payload.widget_view is None:
+        return error_response(422, "rendered_view_required", "Include the displayed widget snapshot with the menu view.")
     queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
-    task = asyncio.create_task(respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None if payload.confirmation_view is None else payload.confirmation_view.model_dump(), lambda event, data: queue.put_nowait((event, data)), None if payload.widget_view is None else payload.widget_view.model_dump()))
+    task = asyncio.create_task(respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None if payload.confirmation_view is None else payload.confirmation_view.model_dump(), lambda event, data: queue.put_nowait((event, data)), None if payload.widget_view is None else payload.widget_view.model_dump(), payload.generic_views))
     started = asyncio.create_task(queue.get())
     await asyncio.wait({task, started}, return_when=asyncio.FIRST_COMPLETED)
     first: list[tuple[str, object]] = [started.result()] if started.done() else []
@@ -163,7 +233,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
             task.result()
         except SessionError:
             return error_response(401, "session_required", "Start a session to use chat.")
-        except (ChatError, MenuViewError, ConfirmationViewError) as error:
+        except (ChatError, MenuViewError, ConfirmationViewError, WidgetActionError) as error:
             return error_response(409, "chat_conflict", str(error))
         except ProviderError as error:
             return error_response(502, "provider_error", str(error))
@@ -183,7 +253,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
                     yield sse(*queue.get_nowait())
                 try:
                     yield sse("final", task.result())
-                except (ChatError, ProviderError, MenuViewError, ConfirmationViewError, SessionError) as error:
+                except (ChatError, ProviderError, MenuViewError, ConfirmationViewError, WidgetActionError, SessionError) as error:
                     yield sse("error", {"message": str(error)})
                 return
         finally:
@@ -275,6 +345,35 @@ class WidgetCheckoutPayload(BaseModel):
     cart_revision: str = Field(min_length=64, max_length=64)
 
 
+class WidgetItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(min_length=1, max_length=128)
+    position: int = Field(ge=1)
+
+
+class WidgetItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    action_id: str = Field(min_length=1, max_length=128)
+    type: Literal["cart.add", "cart.remove"]
+    payload: WidgetItemPayload
+
+
+class WidgetLocalePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    lang: Literal["en", "ar"]
+
+
+class WidgetLocaleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    action_id: str = Field(min_length=1, max_length=128)
+    type: Literal["locale.set"]
+    payload: WidgetLocalePayload
+
+
 class WidgetCheckoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     widget_id: str = Field(min_length=1, max_length=128)
@@ -299,15 +398,17 @@ class WidgetLocaleRequest(BaseModel):
 
 
 @app.post("/api/actions", response_model=None)
-def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest | WidgetLocaleRequest, request: Request) -> JSONResponse:
+def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest | WidgetItemRequest | WidgetLocaleRequest, request: Request) -> JSONResponse:
     if not is_local_demo_request(request, "widget-action"):
         return error_response(403, "invalid_origin", "Widget actions require the local application.")
     action = {"widget_id": payload.widget_id, "revision": payload.revision, "action_id": payload.action_id, "type": payload.type, **payload.payload.model_dump()}
+    if isinstance(payload, WidgetItemRequest):
+        action["item_id"] = action.pop("id")
     try:
         token: str = request.cookies.get("restaurant_session", "")
         if payload.type == "locale.set":
             return JSONResponse(content=set_widget_locale(DATABASE_PATH, token, action))
-        if payload.type == "cart.set_quantity":
+        if payload.type in ("cart.set_quantity", "cart.add", "cart.remove"):
             return JSONResponse(content=apply_widget_quantity(DATABASE_PATH, token, action))
         if payload.type == "checkout.start":
             return JSONResponse(content=start_checkout(DATABASE_PATH, token, action))
@@ -329,12 +430,47 @@ def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest | Widge
 class WidgetAcknowledgementRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: int = Field(ge=1)
+    rendered: RenderedView
 
 
 class ConfirmationAcknowledgementRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: int = Field(ge=1)
     locale: Literal["en", "ar"]
+    rendered: ConfirmationRenderedView
+
+
+class GenericStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_ids: list[Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")]] = Field(max_length=100)
+
+
+@app.post("/api/widgets/generic-state", response_model=None)
+def generic_state(payload: GenericStateRequest, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "widget-rendered"):
+        return error_response(403, "invalid_origin", "Widget synchronization requires the local application.")
+    if len(set(payload.widget_ids)) != len(payload.widget_ids) or any(not 1 <= len(widget_id) <= 128 for widget_id in payload.widget_ids):
+        return error_response(422, "invalid_widgets", "Generic widget IDs must be bounded and unique.")
+    try:
+        return JSONResponse(content=read_generic_state(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.widget_ids))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to synchronize widgets.")
+    except WidgetActionError as error:
+        return error_response(409, "widget_conflict", str(error))
+
+
+@app.post("/api/widgets/{widget_id}/generic-rendered", response_model=None)
+def generic_rendered(widget_id: str, payload: GenericReference, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "widget-rendered"):
+        return error_response(403, "invalid_origin", "Widget acknowledgements require the local application.")
+    if widget_id != payload.widget_id:
+        return error_response(409, "widget_conflict", "Generic widget identity does not match its acknowledgement.")
+    try:
+        return JSONResponse(content=acknowledge_generic(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to acknowledge widgets.")
+    except WidgetActionError as error:
+        return error_response(409, "widget_conflict", str(error))
 
 
 @app.post("/api/widgets/{widget_id}/confirmation-rendered", response_model=None)
@@ -342,7 +478,7 @@ def confirmation_rendered(widget_id: str, payload: ConfirmationAcknowledgementRe
     if not is_local_demo_request(request, "widget-rendered"):
         return error_response(403, "invalid_origin", "Widget acknowledgements require the local application.")
     try:
-        return JSONResponse(content=acknowledge_confirmation(DATABASE_PATH, request.cookies.get("restaurant_session", ""), {"widget_id": widget_id, "revision": payload.revision}, payload.locale))
+        return JSONResponse(content=acknowledge_confirmation(DATABASE_PATH, request.cookies.get("restaurant_session", ""), {"widget_id": widget_id, "revision": payload.revision}, payload.locale, payload.rendered.model_dump()))
     except SessionError:
         return error_response(401, "session_required", "Start a session to acknowledge widgets.")
     except ConfirmationViewError as error:
@@ -362,7 +498,7 @@ def widget_rendered(widget_id: str, payload: WidgetAcknowledgementRequest, reque
     if not is_local_demo_request(request, "widget-rendered"):
         return error_response(403, "invalid_origin", "Widget acknowledgements require the local application.")
     try:
-        return JSONResponse(content=acknowledge_widget(DATABASE_PATH, request.cookies.get("restaurant_session", ""), widget_id, payload.revision))
+        return JSONResponse(content=acknowledge_widget(DATABASE_PATH, request.cookies.get("restaurant_session", ""), widget_id, payload.revision, payload.rendered.model_dump()))
     except SessionError:
         return error_response(401, "session_required", "Start a session to acknowledge widgets.")
     except WidgetError as error:

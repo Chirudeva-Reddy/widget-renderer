@@ -1,14 +1,14 @@
-import { Component, StrictMode, useEffect, useRef, useState } from "react";
-import type { FormEvent, ReactElement, ReactNode } from "react";
+import { Component, StrictMode, createContext, useContext, useEffect, useRef, useState } from "react";
+import type { CSSProperties, FormEvent, ReactElement, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
-import { acknowledgeConfirmation, acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, fetchState, parseSnapshot, readSnapshotRevision, restockItem, sellOutItem, setWidgetLocale, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
-import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult, WidgetEnvelope, CheckoutView } from "./api";
+import { acknowledgeConfirmation, acknowledgeWidget, ConfirmationConflict, WidgetActionConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, fetchState, fetchGenericState, parseSnapshot, readSnapshotRevision, restockItem, sellOutItem, setWidgetLocale, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload, validateSnapshot } from "./api";
+import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult, WidgetEnvelope, CheckoutView, RenderedView, ConfirmationRenderedView, GenericWidget, GenericState } from "./api";
 import { Chart } from "./Chart";
 import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
 import { OrderingMenu } from "./OrderingMenu";
 import type { CartChange, QuantityEdit } from "./OrderingMenu";
-import { PreviewControl, PreviewForm } from "./PreviewControl";
+import { PreviewControl, PreviewForm, WidgetDraftProvider } from "./PreviewControl";
 import "./style.css";
 
 const examples: Record<string, string> = {
@@ -28,22 +28,38 @@ function nodeKey(node: Node, index: number, siblings: Node[]): string {
   return `position:${index}:${node.kind}`;
 }
 
+type GenericControls = { widget: GenericWidget; disabled: boolean; pending: boolean; retryKey: string | null; retryQuantity: string | null; onAction: (key: string, quantity: string | null) => void };
+const GenericControlsContext = createContext<GenericControls | null>(null);
+
 function PreviewNode({ node }: { node: Node }): ReactElement {
-  if (node.kind === "button" || node.kind === "input" || node.kind === "select") return <PreviewControl control={node} />;
-  if ("value" in node) return <p className={`widget-text widget-${node.kind}${node.weight ? ` weight-${node.weight}` : ""}`} dir="auto">{node.value}</p>;
-  if (node.kind === "badge") return <span className="widget-badge" dir="auto">{node.label}</span>;
+  const appearance = node.appearance;
+  if (appearance === undefined) return <PreviewNodeContent node={node} />;
+  const style: CSSProperties = { width: appearance.width, height: appearance.height, minWidth: appearance.minWidth, paddingInline: appearance.paddingInline, paddingBlock: appearance.paddingBlock, borderWidth: appearance.borderWidth, borderStyle: appearance.borderWidth === undefined ? undefined : "solid", borderColor: appearance.borderColor === "strong" ? "#596653" : appearance.borderColor === "default" ? "#a5afa0" : "#dce2d7", flex: "flex" in node ? node.flex : undefined };
+  const classes: string = ["studio-presentation", appearance.theme ? `theme-${appearance.theme}` : "", appearance.size ? `studio-size-${appearance.size}` : "", appearance.variant ? `studio-variant-${appearance.variant}` : "", appearance.primary ? "studio-primary" : "", appearance.uniform ? "studio-uniform" : "", appearance.block ? "studio-block" : "", appearance.flush ? "studio-flush" : ""].filter(Boolean).join(" ");
+  return <div className={classes} style={style} lang={appearance.locale} dir={appearance.locale === "ar" ? "rtl" : appearance.locale === "en" ? "ltr" : undefined}><PreviewNodeContent node={node} /></div>;
+}
+
+function PreviewNodeContent({ node }: { node: Node }): ReactElement {
+  const generic: GenericControls | null = useContext(GenericControlsContext);
+  if (node.kind === "button" && node.key !== undefined && generic !== null) {
+    const binding = generic.widget.bindings.find((entry) => entry.key === node.key);
+    if (binding !== undefined) return <button type="button" disabled={node.disabled === true || generic.pending || !binding.enabled || (generic.disabled && generic.retryKey !== binding.key)} onClick={() => generic.onAction(binding.key, null)}>{binding.label}</button>;
+  }
+  if (node.kind === "button" || node.kind === "input" || node.kind === "select") return <PreviewControl control={node} disabled={generic?.disabled === true || generic?.pending === true} onChange={node.kind === "select" && node.key !== undefined && generic !== null && generic.widget.bindings.some((binding) => binding.key === node.key && binding.enabled) ? (value) => generic.onAction(node.key!, value) : null} />;
+  if ("value" in node) return <p className={[`widget-text widget-${node.kind}`, node.weight ? `weight-${node.weight}` : "", node.color ? `color-${node.color}` : "", node.size ? `${node.kind}-size-${node.size}` : "", node.textAlign ? `text-${node.textAlign}` : "", node.italic ? "italic" : "", node.lineThrough ? "line-through" : ""].filter(Boolean).join(" ")} dir="auto">{node.value}</p>;
+  if (node.kind === "badge") return <span className={`widget-badge badge-${node.color ?? "secondary"} badge-${node.variant ?? "soft"}`} dir="auto">{node.label}</span>;
   if (node.kind === "spacer") return <span className="widget-spacer" aria-hidden="true" />;
   if (node.kind === "divider") return <hr className="widget-divider" />;
-  if (node.kind === "form") return <PreviewForm>{node.children.map((child, index) => <PreviewNode key={child.kind === "input" || child.kind === "select" ? `field:${child.kind}:${child.name}` : nodeKey(child, index, node.children)} node={child} />)}</PreviewForm>;
+  if (node.kind === "form") return <PreviewForm scope={node.key ?? null} disabled={generic?.pending === true || (generic?.disabled === true && generic.retryKey !== node.key)} onSubmit={generic !== null && node.key !== undefined && generic.widget.bindings.some((binding) => binding.key === node.key && binding.enabled) ? (value) => generic.onAction(node.key!, value) : null}>{node.children.map((child, index) => <PreviewNode key={child.kind === "input" || child.kind === "select" ? `field:${child.kind}:${child.name}` : nodeKey(child, index, node.children)} node={child} />)}</PreviewForm>;
   if (node.kind === "chart") return <Chart chart={node} />;
   if (node.kind === "table") return <div className="table-scroll"><table className="widget-table"><tbody>{node.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.cells.map((cell, cellIndex) => {
     const content: ReactElement[] = cell.children.map((child, index) => <PreviewNode key={nodeKey(child, index, cell.children)} node={child} />);
     return row.header ? <th key={cellIndex} scope="col" className={cell.align ? `align-${cell.align}` : undefined}>{content}</th> : <td key={cellIndex} className={cell.align ? `align-${cell.align}` : undefined}>{content}</td>;
   })}</tr>)}</tbody></table></div>;
   if (node.kind === "problem") return <p className="problem">{node.message}</p>;
-  return <div className={[`widget-${node.kind}`, node.gap === undefined ? "" : `gap-${node.gap}`, node.direction ? `direction-${node.direction}` : "", node.align ? `layout-align-${node.align}` : "", node.justify ? `layout-justify-${node.justify}` : "", node.padding === undefined ? "" : `padding-${node.padding}`, node.flex === undefined ? "" : `flex-${node.flex}`].filter(Boolean).join(" ")}>
-    {node.children.length === 0 ? <p className="empty-card">This {node.kind === "list" ? "list" : "container"} is empty.</p>
-      : node.children.map((child, index) => <PreviewNode key={nodeKey(child, index, node.children)} node={child} />)}
+  return <div className={[`widget-${node.kind}`, node.gap === undefined ? "" : `gap-${node.gap}`, node.direction ? `direction-${node.direction}` : "", node.align ? `layout-align-${node.align}` : "", node.justify ? `layout-justify-${node.justify}` : "", node.padding === undefined ? "" : `padding-${node.padding}`, node.flex === undefined ? "" : `flex-${node.flex}`, node.background ? `bg-${node.background}` : "", node.radius ? `radius-${node.radius}` : ""].filter(Boolean).join(" ")}>
+    {node.children.length === 0 ? node.kind === "box" ? null : <p className="empty-card">This {node.kind === "list" ? "list" : "container"} is empty.</p>
+      : <>{node.children.slice(0, node.appearance?.limit ?? node.children.length).map((child, index) => <PreviewNode key={nodeKey(child, index, node.children)} node={child} />)}{node.appearance?.limit !== undefined && node.children.length > node.appearance.limit && <details><summary>Show more</summary>{node.children.slice(node.appearance.limit).map((child, index) => <PreviewNode key={nodeKey(child, index + node.appearance!.limit!, node.children)} node={child} />)}</details>}</>}
   </div>;
 }
 
@@ -54,8 +70,8 @@ class PreviewBoundary extends Component<{ children: ReactNode }, { failed: boole
   render(): ReactNode { return this.state.failed ? <p className="problem" role="alert">This widget could not be displayed.</p> : this.props.children; }
 }
 
-function Preview({ card }: { card: Card }): ReactElement {
-  return <PreviewBoundary><PreviewNode node={card} /></PreviewBoundary>;
+function Preview({ card, controls }: { card: Card; controls?: GenericControls }): ReactElement {
+  return <PreviewBoundary><WidgetDraftProvider><GenericControlsContext.Provider value={controls ?? null}><div data-generic-widget={controls?.widget.widget_id} data-revision={controls?.widget.revision}><PreviewNode node={card} /></div>{controls?.retryKey != null && <button type="button" disabled={controls.pending} onClick={() => controls.onAction(controls.retryKey!, controls.retryQuantity)}>Retry widget action</button>}</GenericControlsContext.Provider></WidgetDraftProvider></PreviewBoundary>;
 }
 
 const confirmationSchema = z.object({ actionId: z.string().uuid(), cartRevision: z.string().regex(/^[a-f0-9]{64}$/), widgetId: z.string().min(1).max(128).optional(), widgetRevision: z.number().int().positive().optional() }).strict().refine((value) => (value.widgetId === undefined) === (value.widgetRevision === undefined));
@@ -69,7 +85,7 @@ function readConfirmation(): Confirmation | null {
 
 type DisplayedMenu = { menu: Menu; widgets: { en: Card; ar: Card }; ids: { en: string; ar: string }; envelopes: { en: WidgetEnvelope; ar: WidgetEnvelope } };
 
-type ChatMessage = { role: "user"; text: string } | { role: "assistant"; text: string; suggestion: ChatReply["suggestion"]; menuRevision: number; cartRevision: string; widget: Card | null; locale: "en" | "ar"; streaming?: { index: number; node: Node }[]; incomplete?: boolean };
+type ChatMessage = { id: string; role: "user"; text: string } | { id: string; role: "assistant"; text: string; suggestions: ChatReply["suggestions"]; proposedActions: ChatReply["proposed_actions"]; warnings: ChatReply["warnings"]; menuRevision: number; cartRevision: string; widget: Card | null; widgetControl: GenericWidget | null; extraWidgets: { card: Card; control: GenericWidget | null }[]; locale: "en" | "ar"; streaming?: { index: number; node: Node }[]; incomplete?: boolean };
 
 // The backend keeps one menu widget per session (new revisions, same widget_id), so a repeat menu reply edits the first menu bubble instead of stacking a stale copy.
 function editMenuInPlace(messages: ChatMessage[]): ChatMessage[] {
@@ -97,9 +113,17 @@ function App(): ReactElement {
   const [order, setOrder] = useState<Order | null>(null);
   const [chatText, setChatText] = useState<string>("");
   const [chatLocale, setChatLocale] = useState<"en" | "ar">("en");
+  const [localePending, setLocalePending] = useState<boolean>(false);
+  const localeAttempt = useRef<{ widget: WidgetEnvelope; lang: "en" | "ar"; actionId: string } | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatPending, setChatPending] = useState<boolean>(false);
   const [chatError, setChatError] = useState<string>("");
+  const [route, setRoute] = useState<string>(location.hash);
+  useEffect(() => {
+    const sync = (): void => setRoute(location.hash);
+    addEventListener("hashchange", sync);
+    return () => removeEventListener("hashchange", sync);
+  }, []);
 
   async function submitChat(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -107,7 +131,8 @@ function App(): ReactElement {
     if (!text || chatPending || menu === null || !live) return;
     setChatPending(true);
     setChatError("");
-    setChatMessages((messages: ChatMessage[]) => [...messages, { role: "user", text }]);
+    const clientMessageId: string = crypto.randomUUID();
+    setChatMessages((messages: ChatMessage[]) => [...messages, { id: clientMessageId, role: "user", text }]);
     setChatText("");
     let streamed: boolean = false;
     try {
@@ -115,18 +140,42 @@ function App(): ReactElement {
       const renderedViewId: string | null = activeView === null ? null : activeView.ids[chatLocale];
       const menuRevision: number = activeView === null ? menu.revision : activeView.menu.revision;
       const envelope: WidgetEnvelope | null = activeView === null ? null : activeView.envelopes[chatLocale];
-      const reply: ChatReply = await streamChat(text, menuRevision, crypto.randomUUID(), chatLocale, renderedViewId, envelope === null ? null : { widget_id: envelope.widget_id, revision: envelope.revision }, checkoutView === null || confirmation !== null || order !== null ? null : { widget_id: checkoutView.widget_id, revision: checkoutView.revision }, (event) => {
+      const reply: ChatReply = await streamChat(text, menuRevision, clientMessageId, chatLocale, renderedViewId, envelope === null || renderedMenu === null ? null : { widget_id: envelope.widget_id, revision: envelope.revision, rendered: renderedMenu }, checkoutView === null || renderedConfirmation === null ? null : { widget_id: checkoutView.widget_id, revision: checkoutView.revision, rendered: renderedConfirmation }, (event) => {
         if (event.type === "card") {
           streamed = true;
-          setChatMessages((messages: ChatMessage[]) => [...messages, { role: "assistant", text: event.text ?? "", suggestion: null, menuRevision, cartRevision: "", widget: null, locale: chatLocale, streaming: [] }]);
+          setChatMessages((messages: ChatMessage[]) => [...messages, { id: `${clientMessageId}:stream`, role: "assistant", text: event.text ?? "", suggestions: [], proposedActions: [], warnings: [], menuRevision, cartRevision: "", widget: null, widgetControl: null, extraWidgets: [], locale: chatLocale, streaming: [] }]);
         } else {
           setChatMessages((messages: ChatMessage[]) => messages.map((entry, index) => index === messages.length - 1 && entry.role === "assistant" && entry.streaming ? { ...entry, streaming: [...entry.streaming, event] } : entry));
         }
       });
-      const final: ChatMessage = { role: "assistant", text: reply.text, suggestion: reply.suggestion, menuRevision: reply.menu_revision, cartRevision: reply.cart_revision, widget: reply.widget, locale: reply.locale };
-      setChatMessages((messages: ChatMessage[]) => editMenuInPlace(streamed ? [...messages.slice(0, -1), final] : [...messages, final]));
+      const textMessage = reply.messages.find((message) => message.kind === "text");
+      if (textMessage === undefined || textMessage.message_id !== reply.message_id || textMessage.payload.text !== reply.text) throw new Error("The assistant message envelope does not match the reply.");
+      const widgetMessages = reply.messages.filter((message) => message.kind !== "text");
+      if (widgetMessages.length !== reply.widget_previews.length) throw new Error("The widget envelopes do not match their validated previews.");
+      const validatedWidgets: Card[] = [];
+      for (const [index, widgetMessage] of widgetMessages.entries()) {
+        const previous = widgetMessage.payload.type === "ListView" ? envelope : chatMessages.flatMap((entry) => entry.role === "assistant" ? [entry.widgetControl, ...entry.extraWidgets.map((extra) => extra.control)] : []).find((control) => control?.widget_id === widgetMessage.widget_id);
+        if (widgetMessage.kind === "widget_update" && (previous == null || widgetMessage.widget_id !== previous.widget_id || widgetMessage.revision <= previous.revision)) throw new WidgetActionConflict("The widget update does not match the displayed revision. Resync and try again.");
+        const validated: ValidationResult = await validatePayload(JSON.stringify(widgetMessage.payload));
+        if (validated.status !== "valid" || JSON.stringify(validated.preview) !== JSON.stringify(reply.widget_previews[index])) throw new WidgetActionConflict("The widget envelope failed validation. The previous view was retained.");
+        const controls = reply.widget_controls[index];
+        if (controls !== null && (controls.widget_id !== widgetMessage.widget_id || controls.revision !== widgetMessage.revision)) throw new WidgetActionConflict("The widget action bindings do not match the issued widget.");
+        validatedWidgets.push(validated.preview);
+      }
+      const final: ChatMessage = { id: textMessage.message_id, role: "assistant", text: textMessage.payload.text, suggestions: reply.suggestions, proposedActions: reply.proposed_actions, warnings: reply.warnings, menuRevision: reply.menu_revision, cartRevision: reply.cart_revision, widget: validatedWidgets[0] ?? null, widgetControl: reply.widget_controls[0] ?? null, extraWidgets: validatedWidgets.slice(1).map((card, index) => ({ card, control: reply.widget_controls[index + 1] ?? null })), locale: reply.locale };
+      setChatMessages((messages: ChatMessage[]) => {
+        const updates = widgetMessages.flatMap((message, index) => message.kind === "widget_update" && message.payload.type === "Card" ? [{ id: message.widget_id, card: validatedWidgets[index], control: reply.widget_controls[index] }] : []);
+        const retained = (streamed ? messages.slice(0, -1) : messages).map((entry): ChatMessage => {
+          if (entry.role !== "assistant") return entry;
+          const update = updates.find((item) => item.id === entry.widgetControl?.widget_id);
+          return { ...entry, widget: update?.card ?? entry.widget, widgetControl: update?.control ?? entry.widgetControl, extraWidgets: entry.extraWidgets.map((extra) => { const replacement = updates.find((item) => item.id === extra.control?.widget_id); return replacement ? { card: replacement.card, control: replacement.control } : extra; }) };
+        });
+        const additions = validatedWidgets.flatMap((card, index) => updates.some((update) => update.id === widgetMessages[index].widget_id) ? [] : [{ card, control: reply.widget_controls[index] }]);
+        return editMenuInPlace([...retained, { ...final, widget: additions[0]?.card ?? null, widgetControl: additions[0]?.control ?? null, extraWidgets: additions.slice(1) }]);
+      });
     } catch (error: unknown) {
       if (streamed) setChatMessages((messages: ChatMessage[]) => messages.map((entry, index) => index === messages.length - 1 && entry.role === "assistant" ? { ...entry, incomplete: true } : entry));
+      if (error instanceof WidgetActionConflict) { genericRecovery.current = true; setLive(false); setLiveNotice("The widget update could not be accepted. The last safe view and drafts are retained. Resync to recover."); }
       setChatText(text);
       setChatError(error instanceof Error ? error.message : "Unable to send the message.");
     } finally {
@@ -149,6 +198,7 @@ function App(): ReactElement {
   const pendingChanges = useRef<number>(0);
   const editAttempt = useRef<{ widgetId: string; actionId: string } | null>(null);
   const widgetAttempts = useRef<Map<string, { actionId: string; envelope: WidgetEnvelope }>>(new Map());
+  const [genericAttempts, setGenericAttempts] = useState<Readonly<Record<string, string>>>({});
   const [sessionReady, setSessionReady] = useState<boolean>(false);
   const [live, setLive] = useState<boolean>(false);
   const [liveNotice, setLiveNotice] = useState<string>("Connecting to live updates…");
@@ -157,24 +207,9 @@ function App(): ReactElement {
   const observedRevision = useRef<number>(0);
   const appliedRevision = useRef<number>(0);
   const invalidRevision = useRef<number | null>(null);
+  const genericRecovery = useRef<boolean>(false);
+  const acceptedWidgets = useRef<Snapshot["widgets"] | null>(null);
 
-
-  async function changeLocale(locale: "en" | "ar"): Promise<void> {
-    if (displayedMenu === null || !live || pendingChanges.current > 0 || locale === chatLocale) return;
-    const widget: WidgetEnvelope = displayedMenu.envelopes[chatLocale];
-    pendingChanges.current += 1;
-    setLive(false);
-    setCartPending(true);
-    try {
-      await setWidgetLocale(widget, crypto.randomUUID(), locale);
-      setCartError("");
-    } catch (error: unknown) {
-      setCartError(error instanceof Error ? `Language change failed: ${error.message} Resync to retrieve the saved language.` : "Language change failed. Resync to retrieve the saved language.");
-    } finally {
-      pendingChanges.current -= 1;
-      setCartPending(false);
-    }
-  }
 
   async function reviewOrder(): Promise<void> {
     if (cart === null || displayedMenu === null || !live || pendingChanges.current > 0 || confirmation !== null || Object.keys(quantityEdits).length > 0 || cart.items.length === 0) return;
@@ -276,7 +311,16 @@ function App(): ReactElement {
     let retry: number | null = null;
     let heartbeat: number | null = null;
     function applySnapshot(snapshot: Snapshot): void {
+      if (acceptedWidgets.current !== null) {
+        for (const locale of ["en", "ar"] as const) {
+          const old = acceptedWidgets.current[locale];
+          const next = snapshot.widgets[locale];
+          if (old.widget_id !== next.widget_id || next.revision < old.revision || (next.revision === old.revision && JSON.stringify(next) !== JSON.stringify(old))) throw new Error("The widget update is older or does not match its issued identity.");
+        }
+      }
+      acceptedWidgets.current = snapshot.widgets;
       appliedRevision.current = snapshot.state_revision;
+      setQuantityEdits((edits) => Object.fromEntries(Object.entries(edits).map(([id, edit]) => [id, edit.changedRevision === undefined && edit.cartRevision !== snapshot.cart.revision ? { ...edit, changedRevision: snapshot.cart.revision } : edit])));
       setDisplayedMenu({ menu: snapshot.menu, widgets: snapshot.menu_widgets, ids: snapshot.menu_view_ids, envelopes: snapshot.widgets });
       setMenu(snapshot.menu);
       setCart(snapshot.cart);
@@ -286,7 +330,8 @@ function App(): ReactElement {
     function connect(): void {
       if (!active) return;
       source = new EventSource("/api/events");
-      source.addEventListener("snapshot", (event: MessageEvent<string>) => {
+      source.addEventListener("snapshot", (event: MessageEvent<string>) => { void (async (): Promise<void> => {
+        let revision: number = 0;
         try {
           if (!active) return;
           if (heartbeat !== null) window.clearTimeout(heartbeat);
@@ -296,12 +341,15 @@ function App(): ReactElement {
             source?.close();
             retry = window.setTimeout(connect, 2000);
           }, 10000);
-          const revision: number = readSnapshotRevision(event.data);
+          revision = readSnapshotRevision(event.data);
+          if (genericRecovery.current) return;
           if (revision < observedRevision.current) return;
           observedRevision.current = revision;
           if (invalidRevision.current !== null && revision <= invalidRevision.current) return;
           if (revision > appliedRevision.current) {
             const snapshot: Snapshot = parseSnapshot(event.data);
+            await validateSnapshot(snapshot);
+            if (!active || revision < observedRevision.current) return;
             if (pendingChanges.current > 0) return;
             applySnapshot(snapshot);
           }
@@ -310,6 +358,7 @@ function App(): ReactElement {
           setLive(true);
           setLiveNotice("");
         } catch (error: unknown) {
+          if (!active || (revision > 0 && revision < observedRevision.current)) return;
           if (heartbeat !== null) window.clearTimeout(heartbeat);
           setLive(false);
           invalidRevision.current = observedRevision.current;
@@ -317,7 +366,7 @@ function App(): ReactElement {
           source?.close();
           retry = window.setTimeout(connect, 2000);
         }
-      });
+      })(); });
       source.addEventListener("session_expired", () => {
         if (!active) return;
         if (heartbeat !== null) window.clearTimeout(heartbeat);
@@ -336,12 +385,20 @@ function App(): ReactElement {
       setResyncPending(true);
       try {
         const snapshot: Snapshot = await fetchState();
+        await validateSnapshot(snapshot);
+        const genericStates: GenericState[] = await fetchGenericState();
         if (!active) return;
-        if (snapshot.state_revision < observedRevision.current) throw new Error("State synchronization returned an older snapshot. Retry Resync.");
+        if (snapshot.state_revision < appliedRevision.current) throw new Error("State synchronization returned an older snapshot. Retry Resync.");
         if (pendingChanges.current > 0) throw new Error("Wait for pending changes, then retry Resync.");
+        applySnapshot(snapshot);
+        setChatMessages((messages) => messages.map((message): ChatMessage => {
+          if (message.role !== "assistant") return message;
+          const current = genericStates.find((state) => state.widget.widget_id === message.widgetControl?.widget_id);
+          return { ...message, widget: current?.preview ?? message.widget, widgetControl: current?.widget ?? message.widgetControl, extraWidgets: message.extraWidgets.map((extra) => { const state = genericStates.find((entry) => entry.widget.widget_id === extra.control?.widget_id); return state === undefined ? extra : { card: state.preview, control: state.widget }; }) };
+        }));
         observedRevision.current = snapshot.state_revision;
         invalidRevision.current = null;
-        applySnapshot(snapshot);
+        genericRecovery.current = false;
         setLiveNotice("State restored. Waiting for live updates…");
         connect();
       } catch (error: unknown) {
@@ -364,8 +421,8 @@ function App(): ReactElement {
     });
   }
 
-  async function changeQuantity({ itemId, quantity, cartRevision, actionId }: CartChange): Promise<boolean> {
-    if (cart === null || !live || pendingChanges.current > 0 || confirmation !== null || checkoutRevision !== null || order !== null) return false;
+  async function changeQuantity({ itemId, quantity, cartRevision, actionId }: CartChange): Promise<Cart | null> {
+    if (cart === null || !live || pendingChanges.current > 0 || confirmation !== null || checkoutRevision !== null || order !== null) return null;
     pendingChanges.current += 1;
     setLive(false);
     setCartPending(true);
@@ -373,10 +430,10 @@ function App(): ReactElement {
       const next: Cart = await updateCart(itemId, quantity, actionId, cartRevision);
       setCart(next);
       setCartError("");
-      return true;
+      return next;
     } catch (error: unknown) {
       setCartError(error instanceof Error ? error.message : "Unable to update cart.");
-      return false;
+      return null;
     } finally {
       pendingChanges.current -= 1;
       setCartPending(false);
@@ -395,7 +452,7 @@ function App(): ReactElement {
     setLive(false);
     setCartPending(true);
     try {
-      const next: Cart = await updateWidgetCart(original.widget_id, original.revision, change.actionId, change.itemId, binding.position, change.quantity, change.cartRevision);
+      const next: Cart = await updateWidgetCart(original.widget_id, original.revision, change.actionId, change.itemId, binding.position, change.quantity, change.cartRevision, change.actionType);
       widgetAttempts.current.delete(change.itemId);
       setCart(next);
       setCartError("");
@@ -407,6 +464,40 @@ function App(): ReactElement {
       pendingChanges.current -= 1;
       setCartPending(false);
     }
+  }
+
+  async function changeGenericWidget(widget: GenericWidget, key: string, quantity: string | null): Promise<void> {
+    const binding = widget.bindings.find((entry) => entry.key === key);
+    if (binding?.type === "cart.set_quantity" && (quantity === null || !/^[0-9]+$/.test(quantity) || Number(quantity) > 99 || !binding.quantities?.includes(Number(quantity)))) { setChatError("Choose a whole quantity between 0 and 99."); return; }
+    const attemptKey: string = `${widget.widget_id}:${key}:${quantity ?? ""}`;
+    const existing: string | undefined = genericAttempts[attemptKey];
+    if (binding === undefined || !binding.enabled || !live || pendingChanges.current > 0 || confirmation !== null || checkoutRevision !== null || order !== null || (existing === undefined && (menu?.revision !== widget.menu_revision || cart?.revision !== widget.cart_revision))) return;
+    const actionId: string = existing ?? crypto.randomUUID();
+    setGenericAttempts((attempts) => ({ ...attempts, [attemptKey]: actionId }));
+    pendingChanges.current += 1;
+    setLive(false);
+    setCartPending(true);
+    try {
+      const next: Cart = await updateWidgetCart(widget.widget_id, widget.revision, actionId, binding.item_id, binding.position, Number(quantity ?? "0"), widget.cart_revision, binding.type === "cart.set_quantity" ? undefined : binding.type);
+      if (existing === undefined) setCart(next);
+      setGenericAttempts((attempts) => { const { [attemptKey]: removed, ...remaining } = attempts; return remaining; });
+      setChatError("");
+    } catch (error: unknown) {
+      if (error instanceof WidgetActionConflict) setGenericAttempts((attempts) => { const { [attemptKey]: removed, ...remaining } = attempts; return remaining; });
+      const message: string = error instanceof Error ? error.message : "Unable to apply widget action.";
+      setChatError(error instanceof WidgetActionConflict ? message : `${message} Retry the same button to retrieve the result.`);
+    } finally {
+      pendingChanges.current -= 1;
+      setCartPending(false);
+    }
+  }
+
+  function controlsFor(widget: GenericWidget | null): GenericControls | undefined {
+    if (widget === null) return undefined;
+    const retryKey: string | null = widget.bindings.find((binding) => Object.keys(genericAttempts).some((key) => key.startsWith(`${widget.widget_id}:${binding.key}:`)))?.key ?? null;
+    const retryAttempt: string | undefined = retryKey === null ? undefined : Object.keys(genericAttempts).find((key) => key.startsWith(`${widget.widget_id}:${retryKey}:`));
+    const retryQuantity: string | null = retryAttempt === undefined || retryKey === null ? null : retryAttempt.slice(`${widget.widget_id}:${retryKey}:`.length) || null;
+    return { widget, retryQuantity, pending: cartPending, disabled: !live || confirmation !== null || checkoutRevision !== null || order !== null || menu?.revision !== widget.menu_revision || cart?.revision !== widget.cart_revision || retryKey !== null, retryKey: live && confirmation === null && checkoutRevision === null && order === null ? retryKey : null, onAction: (key: string, quantity: string | null) => { void changeGenericWidget(widget, key, quantity); } };
   }
 
 
@@ -489,29 +580,95 @@ function App(): ReactElement {
   const activeMenuIndex: number = chatMessages.reduce((last: number, message: ChatMessage, index: number) => message.role === "assistant" && message.widget?.kind === "list" ? index : last, -1);
 
   const activeEnvelope: WidgetEnvelope | null = activeMenuIndex < 0 || displayedMenu === null ? null : displayedMenu.envelopes[chatLocale];
+  const menuDisabled: boolean = cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live;
+  const renderedMenu: RenderedView | null = activeEnvelope === null || cart === null ? null : {
+    locale: chatLocale,
+    rows: activeEnvelope.menu.items.map((item) => {
+      const quantity: number = cart.items.find((entry) => entry.id === item.id)?.quantity ?? 0;
+      const edit: QuantityEdit | undefined = quantityEdits[item.id];
+      const value: string = edit?.value ?? String(quantity);
+      const maximum: number = item.available ? 99 : quantity;
+      const issues: ("invalid_quantity" | "stale_cart" | "sold_out")[] = [];
+      const valid: boolean = /^[0-9]{1,2}$/.test(value) && Number(value) <= maximum;
+      const stale: boolean = edit !== undefined && (edit.cartRevision !== cart.revision || edit.changedRevision !== undefined);
+      if (!valid) issues.push("invalid_quantity");
+      if (stale) issues.push("stale_cart");
+      if (!item.available) issues.push("sold_out");
+      return { item_id: item.id, position: item.position, sold_out: !item.available, placeholder: false, quantity: value, draft: edit !== undefined, edit_revision: edit?.cartRevision ?? null, changed_revision: edit?.changedRevision ?? null, disabled: menuDisabled, controls: { input: menuDisabled, decrease: menuDisabled || stale || edit !== undefined || quantity === 0, increase: menuDisabled || stale || edit !== undefined || !item.available || quantity >= 99, apply: menuDisabled || stale || !valid || edit === undefined, remove: menuDisabled || stale || quantity === 0 }, issues };
+    }),
+    checkout_disabled: menuDisabled || cart.items.length === 0 || Object.keys(quantityEdits).length > 0,
+  };
+  const renderedMenuJson: string = JSON.stringify(renderedMenu);
+  const renderedConfirmation: ConfirmationRenderedView | null = checkoutView === null || cart === null || checkoutRevision === null || confirmation !== null || order !== null ? null : (() => {
+    const stale: boolean = checkoutInvalidated || cart.revision !== checkoutRevision;
+    const drafts: boolean = Object.keys(quantityEdits).length > 0;
+    const disabled: boolean = cartPending || !live;
+    const issues: ConfirmationRenderedView["issues"] = [];
+    if (stale) issues.push("stale");
+    if (drafts) issues.push("drafts");
+    if (!cart.can_checkout && cart.items.length > 0) issues.push("sold_out");
+    if (disabled) issues.push("disconnected");
+    return { locale: chatLocale, rows: checkoutView.cart.items.map((item) => ({ item_id: item.id, quantity: item.quantity, sold_out: !item.available })), edit_disabled: disabled || !checkoutView.actions.some((action) => action.type === "order.edit" && action.enabled), confirm_disabled: disabled || stale || drafts || !cart.can_checkout || !checkoutView.actions.some((action) => action.type === "order.confirm" && action.enabled), issues };
+  })();
+  const renderedConfirmationJson: string = JSON.stringify(renderedConfirmation);
+  async function changeLocale(lang: "en" | "ar"): Promise<void> {
+    if (localePending || chatPending || pendingChanges.current > 0 || displayedMenu === null || !live || lang === chatLocale) return;
+    const previous = localeAttempt.current;
+    const attempt = previous?.lang === lang ? previous : { widget: displayedMenu.envelopes[chatLocale], lang, actionId: crypto.randomUUID() };
+    localeAttempt.current = attempt;
+    setLocalePending(true);
+    pendingChanges.current += 1;
+    setLive(false);
+    try {
+      await setWidgetLocale(attempt.widget, attempt.lang, attempt.actionId);
+      localeAttempt.current = null;
+      setChatLocale(lang);
+      setChatError("");
+    } catch (error: unknown) {
+      if (error instanceof WidgetActionConflict) localeAttempt.current = null;
+      setChatError(error instanceof Error ? error.message : "Unable to change language.");
+    } finally {
+      pendingChanges.current -= 1;
+      setLocalePending(false);
+    }
+  }
   useEffect(() => {
-    if (activeEnvelope === null) return;
+    if (activeEnvelope === null || renderedMenu === null || cart === null || activeEnvelope.cart_revision !== cart.revision) return;
     let active: boolean = true;
-    void acknowledgeWidget(activeEnvelope).catch((error: unknown) => {
+    void acknowledgeWidget(activeEnvelope, renderedMenu).catch((error: unknown) => {
       if (active) setChatError(error instanceof Error ? error.message : "Widget acknowledgement failed.");
     });
     return () => { active = false; };
-  }, [activeEnvelope?.widget_id, activeEnvelope?.revision]);
+  }, [activeEnvelope?.widget_id, activeEnvelope?.revision, renderedMenuJson]);
 
   useEffect(() => {
-    if (checkoutView === null || confirmation !== null || order !== null) return;
+    if (checkoutView === null || renderedConfirmation === null) return;
     let active: boolean = true;
-    void acknowledgeConfirmation(checkoutView, chatLocale).catch((error: unknown) => {
+    void acknowledgeConfirmation(checkoutView, renderedConfirmation).catch((error: unknown) => {
       if (active) {
         setCheckoutInvalidated(true);
         setCartError(error instanceof Error ? error.message : "Confirmation acknowledgement failed. Review your cart again.");
       }
     });
     return () => { active = false; };
-  }, [checkoutView?.widget_id, checkoutView?.revision, chatLocale, confirmation, order]);
+  }, [checkoutView?.widget_id, checkoutView?.revision, renderedConfirmationJson]);
 
+  if (route !== "#/lab") return <main className="chat-page" lang={chatLocale} dir={chatLocale === "ar" ? "rtl" : "ltr"}>
+    <header className="chat-topbar"><span className="brand-mark" aria-hidden="true">W</span><h1 id="chat-title">{chatLocale === "ar" ? "مساعد المطعم" : "Restaurant assistant"}</h1><div className="chat-language"><label htmlFor="chat-language" className="visually-hidden">Language</label><select id="chat-language" value={chatLocale} disabled={localePending || cartPending || chatPending || displayedMenu === null || !live} onChange={(event) => { void changeLocale(event.target.value as "en" | "ar"); }}><option value="en">English</option><option value="ar">العربية</option></select></div><a href="#/lab" className="lab-link">{chatLocale === "ar" ? "مختبر الودجت" : "Widget lab"}</a></header>
+    <section className="chat-body" aria-labelledby="chat-title">
+      {chatMessages.length === 0 && <div className="chat-greeting"><p>{chatLocale === "ar" ? "مرحباً، أنا هنا لمساعدتك في اختيار طلبك." : "Hello, I'm here to help you choose and place your order."}</p><div className="chat-starters">{(chatLocale === "ar" ? ["اعرض القائمة", "أضف حمص واحد"] : ["Show me the menu", "Add one hummus"]).map((starter: string) => <button type="button" key={starter} onClick={() => setChatText(starter)}>{starter}</button>)}</div><small>{chatLocale === "ar" ? "تتطلب تغييرات السلة المقترحة موافقتك." : "Suggested cart changes need your approval."}</small></div>}
+      <div className="chat-history" aria-live="polite">{chatMessages.map((message, index) => <div key={message.id} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && message.warnings.length > 0 && <p className="notice" role="status">{message.locale === "ar" ? "تم تصحيح السعر باستخدام قائمة المطعم." : "A price was corrected using the restaurant menu."}</p>}{message.role === "assistant" && (message.streaming || message.widget?.kind === "card") && <div className="summary-card" role="region" aria-label={message.locale === "ar" ? "ملخص المساعد" : "Assistant summary"} aria-busy={message.widget === null && !message.incomplete} tabIndex={0} lang={message.locale} dir={message.locale === "ar" ? "rtl" : "ltr"}>{message.widget ? <Preview card={message.widget} controls={controlsFor(message.widgetControl)} /> : <div className="widget-card">{message.streaming?.map((component) => <PreviewNode key={component.index} node={component.node} />)}</div>}{message.incomplete && <p className="problem" role="status">{message.locale === "ar" ? "هذا الملخص غير مكتمل." : "This summary is incomplete."}</p>}</div>}{message.role === "assistant" && message.widget?.kind === "list" && <div className="chat-widget" ref={index === activeMenuIndex ? orderingMenuRef : null} lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && displayedMenu && cart ? <OrderingMenu menu={displayedMenu.menu} cart={cart} card={displayedMenu.widgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onReview={() => { void reviewOrder(); }} onChange={(change: CartChange) => changeWidgetQuantity(change, displayedMenu.envelopes[chatLocale])} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.extraWidgets.map(({ card, control }, widgetIndex) => <div key={widgetIndex} className="summary-card" role="region" aria-label={message.locale === "ar" ? "ملخص المساعد" : "Assistant summary"} lang={message.locale} dir={message.locale === "ar" ? "rtl" : "ltr"}><Preview card={card} controls={controlsFor(control)} /></div>)}{message.role === "assistant" && message.suggestions.map((suggestion) => <button type="button" key={suggestion.item_id} disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { void changeQuantity({ itemId: suggestion.item_id, quantity: suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((next: Cart | null) => { if (next !== null) setChatMessages((messages: ChatMessage[]) => messages.map((entry) => entry.id === message.id && entry.role === "assistant" ? { ...entry, suggestions: entry.suggestions.filter((item) => item.item_id !== suggestion.item_id), cartRevision: next.revision } : entry)); }); }}>Set {suggestion.item_id} quantity to {suggestion.quantity}</button>)}{message.role === "assistant" && message.proposedActions.map((action, actionIndex) => action.type === "locale.set" && action.lang !== null ? <button type="button" key={actionIndex} disabled={localePending || !live || action.lang === chatLocale} onClick={() => { if (action.lang !== null) void changeLocale(action.lang); }}>Switch language to {action.lang === "ar" ? "العربية" : "English"}</button> : <button type="button" key={actionIndex} disabled={cartPending || !live || checkoutRevision !== null || order !== null || cart === null || cart.items.length === 0 || Object.keys(quantityEdits).length > 0 || activeMenuIndex < 0} onClick={() => { void reviewOrder(); }}>Review order</button>)}</div>)}
+        {order ? <OrderReceipt order={order} locale={chatLocale} disabled={cartPending || !live} onStart={editOrder} /> : confirmation ? <ConfirmationRecovery locale={chatLocale} disabled={cartPending || !live} error={cartError} onRetry={() => { void confirmCart(); }} /> : checkoutRevision !== null && checkoutView !== null && cart && <OrderReview invalidated={checkoutInvalidated} view={checkoutView} renderCard={(card: Card) => <Preview card={card} />} cart={cart} reviewedRevision={checkoutRevision} locale={chatLocale} disabled={cartPending || !live} hasDrafts={Object.keys(quantityEdits).length > 0} error={cartError} onEdit={() => { void abandonReview(); }} onReview={() => { void reviewOrder(); }} onConfirm={() => { void confirmCart(); }} />}
+      </div>
+    </section>
+    <div className="chat-composer">
+      {liveNotice && <div className="notice" role="status">{liveNotice} <button type="button" disabled={!sessionReady || cartPending || resyncPending} onClick={() => { setLive(false); setLiveNotice("Synchronizing widgets…"); setResyncVersion((version: number) => version + 1); }}>{resyncPending ? "Synchronizing…" : "Resync"}</button></div>}
+      {chatError && <p className="notice" role="alert">{chatError}</p>}
+      <form className="chat-form" onSubmit={(event) => { void submitChat(event); }}><label htmlFor="chat-input" className="visually-hidden">Your message</label><textarea id="chat-input" value={chatText} onChange={(event) => setChatText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={2000} rows={1} placeholder={chatLocale === "ar" ? "اكتب رسالتك…" : "Type anything…"} /><button type="submit" className="send-button" aria-label={chatPending ? "Thinking…" : "Send message"} aria-busy={chatPending} disabled={chatPending || !live || !chatText.trim()}><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M8 7h9v9" /></svg></button></form>
+    </div>
+  </main>;
   return <main className="shell">
-    <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><span className="badge">PLAYGROUND <span> / 01</span></span></header>
+    <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><nav className="masthead-nav"><a href="#/" className="assistant-link"><span aria-hidden="true">← </span>Back to assistant</a><span className="badge">PLAYGROUND <span> / 01</span></span></nav></header>
     <section className="intro"><p className="eyebrow">VALIDATE &amp; PREVIEW</p><h1>See your widget<br /><em>come to life.</em></h1><p>Paste a widget payload to inspect how it renders. Supports menu layouts, text, badges, dividers, tables, charts and form previews.</p></section>
     <div className="workspace">
       <form className="panel editor" onSubmit={(event) => { void submit(event); }}>
@@ -529,15 +686,6 @@ function App(): ReactElement {
         </div>
       </section>
     </div>
-    <section className="panel menu-panel" aria-labelledby="chat-title">
-      <div className="menu-heading"><div><span className="step">RESTAURANT ASSISTANT / المساعد</span><h2 id="chat-title">Ask about the menu</h2></div><div><label htmlFor="chat-language">Language </label><select id="chat-language" value={chatLocale} disabled={!live || cartPending || chatPending} onChange={(event) => { void changeLocale(event.target.value as "en" | "ar"); }}><option value="en">English</option><option value="ar">العربية</option></select></div></div>
-      <p className="menu-help">Ask in English or Arabic. Suggested cart changes require your approval.</p>
-      <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && (message.streaming || message.widget?.kind === "card") && <div className="summary-card" role="region" aria-label={message.locale === "ar" ? "ملخص المساعد" : "Assistant summary"} aria-busy={message.widget === null && !message.incomplete} tabIndex={0} lang={message.locale} dir={message.locale === "ar" ? "rtl" : "ltr"}>{message.widget ? <Preview card={message.widget} /> : <div className="widget-card">{message.streaming?.map((component) => <PreviewNode key={component.index} node={component.node} />)}</div>}{message.incomplete && <p className="problem" role="status">{message.locale === "ar" ? "هذا الملخص غير مكتمل." : "This summary is incomplete."}</p>}</div>}{message.role === "assistant" && message.widget?.kind === "list" && <div className="chat-widget" ref={index === activeMenuIndex ? orderingMenuRef : null} lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && displayedMenu && cart ? <OrderingMenu menu={displayedMenu.menu} cart={cart} card={displayedMenu.widgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onReview={() => { void reviewOrder(); }} onChange={(change: CartChange) => changeWidgetQuantity(change, displayedMenu.envelopes[chatLocale])} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}
-        {order ? <OrderReceipt order={order} locale={chatLocale} disabled={cartPending || !live} onStart={editOrder} /> : confirmation ? <ConfirmationRecovery locale={chatLocale} disabled={cartPending || !live} error={cartError} onRetry={() => { void confirmCart(); }} /> : checkoutRevision !== null && checkoutView !== null && cart && <OrderReview invalidated={checkoutInvalidated} view={checkoutView} renderCard={(card: Card) => <Preview card={card} />} cart={cart} reviewedRevision={checkoutRevision} locale={chatLocale} disabled={cartPending || !live} hasDrafts={Object.keys(quantityEdits).length > 0} error={cartError} onEdit={() => { void abandonReview(); }} onReview={() => { void reviewOrder(); }} onConfirm={() => { void confirmCart(); }} />}
-      </div>
-      {chatError && <p className="notice" role="alert">{chatError}</p>}
-      <form className="chat-form" onSubmit={(event) => { void submitChat(event); }}><label htmlFor="chat-input">Your message</label><textarea id="chat-input" value={chatText} onChange={(event) => setChatText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={2000} rows={2} /><button type="submit" className="send-button" aria-label={chatPending ? "Thinking…" : "Send message"} aria-busy={chatPending} disabled={chatPending || !live || !chatText.trim()}><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M8 7h9v9" /></svg></button></form>
-    </section>
     <section className="panel menu-panel" aria-labelledby="menu-title">
       <div className="menu-heading"><div><span className="step">RESTAURANT / المطعم</span><h2 id="menu-title">Demo menu <span lang="ar" dir="rtl"> / قائمة الطعام</span></h2></div><button type="button" onClick={() => { void refreshMenu(); }} disabled={menuPending}>Refresh menu</button></div>
       <p className="menu-help">Mock restaurant data · Mark an item sold out or restock it to try an inventory update. Changes appear automatically in other tabs.</p>

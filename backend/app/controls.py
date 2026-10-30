@@ -1,5 +1,5 @@
 import re
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class ControlIssue(TypedDict):
@@ -10,11 +10,14 @@ class ControlIssue(TypedDict):
 
 
 class ButtonNode(TypedDict):
+    disabled: NotRequired[bool]
     kind: Literal["button"]
     label: str
+    key: NotRequired[str]
 
 
 class InputNode(TypedDict):
+    key: NotRequired[str]
     kind: Literal["input"]
     name: str
     value: str
@@ -30,6 +33,7 @@ class SelectOption(TypedDict):
 
 
 class SelectNode(TypedDict):
+    key: NotRequired[str]
     kind: Literal["select"]
     name: str
     value: str
@@ -53,7 +57,13 @@ def validate_control(data: dict[str, object], path: str) -> tuple[ControlNode | 
         if not isinstance(label, str) or not label or len(label) > 256:
             return None, [problem("invalid_control", path, "Button requires a label of at most 256 characters.")]
         node: ControlNode = {"kind": "button", "label": label}
-        supported: set[str] = {"type", "label", "key"}
+        if isinstance(data.get("key"), str):
+            node["key"] = data["key"]
+        supported: set[str] = {"type", "label", "key", "disabled"}
+        if "disabled" in data:
+            if not isinstance(data["disabled"], bool):
+                return None, [problem("invalid_control", path, "Button disabled must be boolean.")]
+            node["disabled"] = data["disabled"]
     else:
         name: object = data.get("name")
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name):
@@ -88,6 +98,8 @@ def validate_control(data: dict[str, object], path: str) -> tuple[ControlNode | 
             supported = {"type", "name", "defaultValue", "placeholder", "disabled", "options", "key"}
         else:
             return None, [problem("invalid_control", path, "Control type is not supported.")]
+    if isinstance(data.get("key"), str):
+        node["key"] = data["key"]
     for prop in data:
         if prop not in supported:
             issues.append({"code": "unsupported_property", "path": f"{path}.{prop}", "severity": "warning", "message": "Property is not supported in the preview."})
