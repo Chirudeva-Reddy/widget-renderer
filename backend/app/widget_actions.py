@@ -3,10 +3,12 @@ import secrets
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 from app.cart import Cart, Order, confirm_session_order, read_cart, require_session, set_session_quantity
+from app.confirmation_widget import build_confirmation_widget
 from app.menu import read_menu
+from app.validator import ContainerNode
 from app.widgets import WidgetEnvelope
 
 
@@ -65,7 +67,16 @@ class CheckoutAction(TypedDict):
     cart_revision: str
 
 
+class ConfirmationPayloads(TypedDict):
+    en: ContainerNode
+    ar: ContainerNode
+
+
 class CheckoutView(TypedDict):
+    kind: Literal["widget"]
+    role: Literal["confirmation"]
+    payload: ConfirmationPayloads
+    cart_revision: str
     widget_id: str
     revision: int
     cart: Cart
@@ -92,7 +103,7 @@ def start_checkout(path: Path, token: str, action: CheckoutAction) -> CheckoutVi
             raise WidgetActionError("Widget is out of date. Refresh the menu and try again.")
         if not cart["items"]:
             raise WidgetActionError("Your cart is empty. Add an item before reviewing.")
-        view: CheckoutView = {"widget_id": secrets.token_urlsafe(24), "revision": 1, "cart": cart}
+        view: CheckoutView = {"kind": "widget", "role": "confirmation", "widget_id": secrets.token_urlsafe(24), "revision": 1, "cart_revision": cart["revision"], "cart": cart, "payload": {"en": build_confirmation_widget(cart, "en"), "ar": build_confirmation_widget(cart, "ar")}}
         connection.execute("INSERT INTO checkout_views (id, session_hash, cart_revision, cart_json) VALUES (?, ?, ?, ?)", (view["widget_id"], session_hash, cart["revision"], json.dumps(cart, ensure_ascii=False)))
         connection.execute("INSERT INTO widget_actions VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request, json.dumps(view, ensure_ascii=False)))
         return view

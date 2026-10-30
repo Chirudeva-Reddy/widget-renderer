@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import type { Cart, Order } from "./api";
+import type { Cart, Order, CheckoutView, Card } from "./api";
 
 type Locale = "en" | "ar";
 
@@ -11,18 +11,15 @@ function OrderLines({ items, locale }: { items: Cart["items"]; locale: Locale })
 }
 
 type ReviewProps = {
-  cart: Cart; reviewedRevision: string; locale: Locale; disabled: boolean; hasDrafts: boolean; error: string;
+  invalidated: boolean; view: CheckoutView; renderCard: (card: Card) => ReactElement; cart: Cart; reviewedRevision: string; locale: Locale; disabled: boolean; hasDrafts: boolean; error: string;
   onEdit: () => void; onReview: () => void; onConfirm: () => void;
 };
 
-export function OrderReview({ cart, reviewedRevision, locale, disabled, hasDrafts, error, onEdit, onReview, onConfirm }: ReviewProps): ReactElement {
+export function OrderReview({ invalidated, view, renderCard, cart, reviewedRevision, locale, disabled, hasDrafts, error, onEdit, onReview, onConfirm }: ReviewProps): ReactElement {
   const arabic: boolean = locale === "ar";
-  const stale: boolean = cart.revision !== reviewedRevision;
+  const stale: boolean = invalidated || cart.revision !== reviewedRevision;
   return <section className="widget-card checkout-card" aria-label={arabic ? "مراجعة الطلب" : "Order review"} lang={locale} dir={arabic ? "rtl" : "ltr"}>
-    <div className="checkout-heading"><span aria-hidden="true">✓</span><div><h3>{arabic ? "راجع طلبك" : "Review your order"}</h3><p>{arabic ? "تحقق من الأصناف قبل التأكيد" : "Check your items before confirming"}</p></div></div>
-    <OrderLines items={cart.items} locale={locale} />
-    {cart.items.length === 0 && <p>{arabic ? "سلتك فارغة." : "Your cart is empty."}</p>}
-    <div className="checkout-total"><span>{arabic ? "إجمالي الأصناف المختارة" : "Selected items total"}</span><strong><bdi>AED {(cart.total_minor / 100).toFixed(2)}</bdi></strong></div>
+    {renderCard(view.payload[locale])}
     {!cart.can_checkout && cart.items.length > 0 && <p className="notice" role="status">{arabic ? "أزل الأصناف غير المتوفرة قبل تأكيد الطلب." : "Remove sold-out items before confirming your order."}</p>}
     {stale && <div className="notice" role="status"><p>{arabic ? "تغيرت السلة أو حالة التوفر. راجع الطلب المحدّث قبل التأكيد." : "Your cart or availability changed. Review the updated order before confirming."}</p><button type="button" disabled={disabled || hasDrafts} onClick={onReview}>{arabic ? "مراجعة الطلب المحدّث" : "Review updated order"}</button></div>}
     {hasDrafts && <p className="notice">{arabic ? "طبّق الكميات المدخلة قبل التأكيد." : "Apply your entered quantities before confirming."}</p>}

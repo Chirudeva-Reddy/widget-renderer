@@ -140,6 +140,14 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual(self.restaurant_request("actions", start, other, "widget-action")[0], 409)
         status, view, _ = self.restaurant_request("actions", start, cookie, "widget-action")
         self.assertEqual((status, view["cart"]), (200, cart))
+        self.assertEqual((view["kind"], view["role"], view["cart_revision"]), ("widget", "confirmation", cart["revision"]))
+        self.assertEqual(set(view["payload"]), {"en", "ar"})
+        for locale, name_field in (("en", "name_en"), ("ar", "name_ar")):
+            card = view["payload"][locale]
+            self.assertEqual(card["kind"], "card")
+            self.assertEqual(card["children"][1]["key"], cart["items"][0]["id"])
+            self.assertEqual(card["children"][1]["children"][0]["value"], cart["items"][0][name_field])
+            self.assertIn("AED", card["children"][-1]["value"])
         self.assertEqual(self.restaurant_request("actions", start, cookie, "widget-action")[1], view)
         confirm = {"widget_id": view["widget_id"], "revision": view["revision"], "action_id": "confirm-checkout", "type": "order.confirm", "payload": {"cart_revision": cart["revision"]}}
         self.assertEqual(self.restaurant_request("actions", confirm, other, "widget-action")[0], 409)
@@ -167,6 +175,14 @@ class PayloadApiTests(unittest.TestCase):
             confirm = {"widget_id": view["widget_id"], "revision": 1, "action_id": "stock-confirm", "type": "order.confirm", "payload": {"cart_revision": cart["revision"]}}
             self.assertEqual(self.restaurant_request("actions", confirm, cookie, "widget-action")[0], 409)
             self.assertFalse(self.snapshot(cookie)["cart"]["can_checkout"])
+            current = self.snapshot(cookie)
+            current_widget = current["widgets"]["en"]
+            status, blocked, _ = self.restaurant_request("actions", {**start, "widget_id": current_widget["widget_id"], "revision": current_widget["revision"], "action_id": "stock-review-updated", "payload": {"cart_revision": current["cart"]["revision"]}}, cookie, "widget-action")
+            self.assertEqual(status, 200)
+            self.assertFalse(blocked["cart"]["can_checkout"])
+            self.assertEqual(blocked["payload"]["en"]["children"][1]["children"][-1], {"kind": "badge", "label": "Sold out"})
+            self.assertEqual(blocked["payload"]["ar"]["children"][1]["children"][-1], {"kind": "badge", "label": "نفد"})
+            self.assertEqual(self.restaurant_request("actions", start, cookie, "widget-action")[1], view)
         finally:
             self.assertEqual(self.restaurant_request("demo/menu/hummus/restock", {}, cookie, "restock")[0], 200)
 

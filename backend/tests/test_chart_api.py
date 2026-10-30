@@ -58,6 +58,12 @@ class ChartApiTests(unittest.TestCase):
         self.assertEqual([series["type"] for series in node["series"]], ["bar", "line"])
         self.assertTrue(node["show_y_axis"])
 
+    def test_x_axis_string_shorthand(self) -> None:
+        chart = {"type": "Chart", "data": [{"day": "Mon", "orders": 1}], "series": [{"type": "bar", "dataKey": "orders"}], "xAxis": "day"}
+        result = self.validate(chart)
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(result["preview"]["children"][1]["points"], [{"label": "Mon", "values": [1]}])
+
     def test_invalid_data_becomes_placeholder_without_losing_siblings(self) -> None:
         base = {"type": "Chart", "data": [{"day": "Mon", "orders": 1}], "series": [{"type": "bar", "dataKey": "orders"}], "xAxis": {"dataKey": "day"}}
         for change in ({"series": [{"type": "area", "dataKey": "orders"}]}, {"data": [{"day": "Mon"}]}, {"data": [{"day": "Mon", "orders": True}]}, {"data": [{"day": "Mon", "orders": 1e300}]}):
