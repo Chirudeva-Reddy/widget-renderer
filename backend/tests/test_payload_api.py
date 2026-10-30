@@ -1,5 +1,6 @@
 import json
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -104,6 +105,63 @@ class PayloadApiTests(unittest.TestCase):
         self.assertTrue(cookie.startswith("restaurant_session="))
         self.assertNotEqual(cookie, "restaurant_session=expired")
         self.assertEqual(cart["items"], [])
+
+    def snapshot(self, cookie: str) -> dict[str, Any]:
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/events", headers={"Cookie": cookie})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            for line in response:
+                if line.startswith(b"data: "):
+                    return json.loads(line[6:])
+        raise RuntimeError("SSE returned no initial snapshot.")
+
+    def test_menu_views_are_stable_scoped_and_immutable(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        initial = self.snapshot(cookie)
+        self.assertEqual(initial["menu_view_ids"], self.snapshot(cookie)["menu_view_ids"])
+        self.assertNotEqual(initial["menu_view_ids"]["en"], initial["menu_view_ids"]["ar"])
+        _, _, other_cookie = self.restaurant_request("session", {}, "", "session")
+        self.assertNotEqual(initial["menu_view_ids"]["en"], self.snapshot(other_cookie)["menu_view_ids"]["en"])
+        item_id: str = initial["menu"]["items"][0]["id"]
+        try:
+            status, _, _ = self.restaurant_request(f"demo/menu/{item_id}/sell-out", {}, cookie, "sell-out")
+            self.assertEqual(status, 200)
+            updated = self.snapshot(cookie)
+            self.assertNotEqual(initial["menu_view_ids"]["en"], updated["menu_view_ids"]["en"])
+            with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
+                row = connection.execute("SELECT menu_json FROM menu_views WHERE id = ?", (initial["menu_view_ids"]["en"],)).fetchone()
+            self.assertEqual(json.loads(row[0]), initial["menu"])
+            self.assertFalse(updated["menu"]["items"][0]["available"])
+        finally:
+            self.assertEqual(self.restaurant_request(f"demo/menu/{item_id}/restock", {}, cookie, "restock")[0], 200)
+
+    def test_chat_rejects_unowned_or_mismatched_menu_views(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        snapshot = self.snapshot(cookie)
+        _, _, other_cookie = self.restaurant_request("session", {}, "", "session")
+        foreign = self.snapshot(other_cookie)
+        for index, (view_id, revision, locale) in enumerate([
+            ("unknown-view", snapshot["menu"]["revision"], "en"),
+            (foreign["menu_view_ids"]["en"], snapshot["menu"]["revision"], "en"),
+            (snapshot["menu_view_ids"]["en"], snapshot["menu"]["revision"] + 1, "en"),
+            (snapshot["menu_view_ids"]["en"], snapshot["menu"]["revision"], "ar"),
+        ]):
+            with self.subTest(view_id=view_id, revision=revision, locale=locale):
+                status, result, _ = self.restaurant_request("chat", {"client_message_id": f"invalid-{index}", "text": "Add the second one", "menu_revision": revision, "locale": locale, "rendered_view_id": view_id}, cookie, "chat")
+                self.assertEqual((status, result["code"]), (409, "chat_conflict"))
+
+    def test_chat_retry_binds_the_original_rendered_view(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        snapshot = self.snapshot(cookie)
+        view_id: str = snapshot["menu_view_ids"]["en"]
+        result = {"text": "Stored reply", "suggestion": None, "menu_revision": snapshot["menu"]["revision"], "cart_revision": snapshot["cart"]["revision"], "widget": None, "locale": "en"}
+        with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
+            session_hash: str = connection.execute("SELECT session_hash FROM menu_views WHERE id = ?", (view_id,)).fetchone()[0]
+            connection.execute("INSERT INTO chat_turns (session_hash, message_id, text, menu_revision, status, result_json, locale, rendered_view_id) VALUES (?, 'retry', 'Show menu', ?, 'complete', ?, 'en', ?)", (session_hash, snapshot["menu"]["revision"], json.dumps(result), view_id))
+        request = {"client_message_id": "retry", "text": "Show menu", "menu_revision": snapshot["menu"]["revision"], "locale": "en", "rendered_view_id": view_id}
+        status, replayed, _ = self.restaurant_request("chat", request, cookie, "chat")
+        self.assertEqual((status, replayed), (200, result))
+        status, conflict, _ = self.restaurant_request("chat", {**request, "rendered_view_id": None}, cookie, "chat")
+        self.assertEqual((status, conflict["code"]), (409, "chat_conflict"))
 
     def test_valid_card_and_nested_list_render_plans(self) -> None:
         for source, expected_kind in [

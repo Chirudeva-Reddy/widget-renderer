@@ -207,6 +207,14 @@ After rendering, the browser acknowledges the actual view with `widget_id`, `rev
 
 Every chat submission also includes that rendered snapshot, so a racing acknowledgement cannot leave the model with an older view. The backend validates it and injects the acknowledged active menu plus other relevant active widgets into every model turn. Preserve both the displayed revision and current inventory revision. The model receives what the customer saw, including validation changes, as well as current availability; storing a snapshot without passing it to the model is insufficient.
 
+### Session-scoped menu reference slice
+
+SSE issues stable opaque `menu_view_ids` for English and Arabic alongside each authoritative menu and its validated widget tree. SQLite stores an immutable menu per owning session, inventory revision and locale; repeated snapshots reuse that ID. `/api/chat` requires `rendered_view_id`, explicitly null before an active chat menu is displayed. Once the active menu is rendered, the browser sends its locale-specific ID and inventory revision from that same snapshot. The backend rejects unknown, cross-session, locale-mismatched and revision-mismatched IDs before a provider request. Chat idempotency includes the rendered view ID.
+
+The model receives the issued displayed menu separately from current menu/cart state. Ordinal references use only displayed dish positions, including sold-out rows. Old issued views remain interpretable after inventory changes; they do not authorize a cart change. Current availability and the existing cart revision guard still apply. With no displayed menu, ask for clarification on ordinal references. This slice binds the active menu; it does not implement generic widget acknowledgements, historical-widget targeting or a client-supplied arbitrary render plan.
+
+Acceptance: test stable IDs on repeated snapshots, separation of sessions/locales, immutable old positions after a menu revision, forged and mismatched view rejection, and conflicting chat-ID reuse. Verify the model receives both displayed and current state through real OpenRouter requests; browser-check that an initial menu request sends null and follow-up messages send the active locale's issued ID. Run the existing backend suite and production build. Implement issuance/persistence, chat validation/context, browser wiring, then integration/browser checks before committing.
+
 ### Actions and deduplication
 
 ```json
@@ -374,7 +382,7 @@ This snapshot describes the current local implementation and its remaining verif
 | --- | --- | --- |
 | Preflight and reviewed contracts | Partial | Project manifests and lockfiles exist and the frontend build and backend tests run. Real OpenRouter structured-output calls succeeded in local integration checks; the broader contract and clean-install verification remain open. |
 | Thin ordering flow with embedded playground | Partial | The repository has a payload playground, nested Card/ListView rendering, chat integration, menu, SQLite cart, quantity changes and order confirmation. A real model-backed menu → quantity edit → review → confirmation → receipt flow is browser-verified using dedicated trusted widgets. Generic widget envelopes, issued action bindings and complete converted template coverage remain open. |
-| Updates and interaction correctness | Partial | Shared inventory controls, an SSE snapshot stream, cart revisions and stored action results are implemented. Full widget revisions and acknowledged rendered snapshots, all-action idempotency, invalid-update recovery and the required disconnection, concurrency and cross-session browser checks remain open. |
+| Updates and interaction correctness | Partial | Shared inventory controls, an SSE snapshot stream, cart revisions, stored action results and session-scoped menu view IDs for chat references are implemented. Full widget revisions and acknowledged rendered snapshots, all-action idempotency, invalid-update recovery and the required disconnection, concurrency and cross-session browser checks remain open. |
 | Required component and locale coverage | Partial | Initial Table and Chart subsets, nested layout, text and form previews exist. The latest chat menu supports direct cart quantity edits, with EN/AR, sold-out, stale-edit and historical-menu browser checks. Generic widget action bindings, complete EN/AR converted fixtures and the full validation matrix remain open. |
 | Focused regression and hand-in | Pending | The frontend production build and backend integration suite run locally. The required real-browser flow, clean install and restart checks, README, complete fixture outcomes, failure note, slides, transcript assessment and inspected submission archive remain to be completed. |
 

@@ -63,6 +63,7 @@ function App(): ReactElement {
   const [notice, setNotice] = useState<string>("");
   const [pending, setPending] = useState<boolean>(false);
   const requestId = useRef<number>(0);
+  const [menuViewIds, setMenuViewIds] = useState<{ en: string; ar: string } | null>(null);
   const [menuWidgets, setMenuWidgets] = useState<{ en: Card; ar: Card } | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [menuError, setMenuError] = useState<string>("");
@@ -87,7 +88,8 @@ function App(): ReactElement {
     setChatMessages((messages: ChatMessage[]) => [...messages, { role: "user", text }]);
     setChatText("");
     try {
-      const reply: ChatReply = await sendChat(text, menu.revision, crypto.randomUUID(), chatLocale);
+      const renderedViewId: string | null = activeMenuIndex >= 0 && menuViewIds !== null ? menuViewIds[chatLocale] : null;
+      const reply: ChatReply = await sendChat(text, menu.revision, crypto.randomUUID(), chatLocale, renderedViewId);
       setChatMessages((messages: ChatMessage[]) => [...messages, { role: "assistant", text: reply.text, suggestion: reply.suggestion, menuRevision: reply.menu_revision, cartRevision: reply.cart_revision, widget: reply.widget, locale: reply.locale }]);
     } catch (error: unknown) {
       setChatText(text);
@@ -179,6 +181,7 @@ function App(): ReactElement {
             retry = window.setTimeout(connect, 2000);
           }, 10000);
           if (pendingChanges.current > 0) return;
+          setMenuViewIds(snapshot.menu_view_ids);
           setMenuWidgets(snapshot.menu_widgets);
           setMenu(snapshot.menu);
           setCart(snapshot.cart);

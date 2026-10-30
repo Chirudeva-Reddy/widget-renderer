@@ -150,7 +150,7 @@ export async function confirmOrder(actionId: string, cartRevision: string): Prom
   return orderSchema.parse(payload);
 }
 
-const snapshotSchema = z.object({ menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict() }).strict();
+const snapshotSchema = z.object({ menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict(), menu_view_ids: z.object({ en: z.string().min(1).max(128), ar: z.string().min(1).max(128) }).strict() }).strict();
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export function parseSnapshot(source: string): Snapshot {
   const payload: unknown = JSON.parse(source);
@@ -164,10 +164,10 @@ const chatReplySchema = z.object({
   widget: cardSchema.nullable(), locale: z.enum(["en", "ar"]),
 }).strict();
 export type ChatReply = z.infer<typeof chatReplySchema>;
-export async function sendChat(text: string, menuRevision: number, messageId: string, locale: "en" | "ar"): Promise<ChatReply> {
+export async function sendChat(text: string, menuRevision: number, messageId: string, locale: "en" | "ar", renderedViewId: string | null): Promise<ChatReply> {
   const response: Response = await fetch("/api/chat", {
     method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "chat" },
-    body: JSON.stringify({ text, menu_revision: menuRevision, client_message_id: messageId, locale }),
+    body: JSON.stringify({ text, menu_revision: menuRevision, client_message_id: messageId, locale, rendered_view_id: renderedViewId }),
   });
   if (!response.ok) {
     const payload: unknown = await response.json();
