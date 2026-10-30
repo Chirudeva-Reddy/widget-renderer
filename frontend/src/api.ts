@@ -146,7 +146,7 @@ const orderSchema = z.object({
 export type Order = z.infer<typeof orderSchema>;
 export class ConfirmationConflict extends Error {}
 
-const checkoutViewSchema = z.object({ widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), cart: cartSchema }).strict();
+const checkoutViewSchema = z.object({ kind: z.literal("widget"), role: z.literal("confirmation"), payload: z.object({ en: cardSchema, ar: cardSchema }).strict(), cart_revision: z.string().regex(/^[a-f0-9]{64}$/), widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), cart: cartSchema }).strict().refine((view) => view.cart_revision === view.cart.revision);
 export type CheckoutView = z.infer<typeof checkoutViewSchema>;
 export async function startWidgetCheckout(widgetId: string, revision: number, actionId: string, cartRevision: string): Promise<CheckoutView> {
   const response: Response = await fetch("/api/actions", { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-action" }, body: JSON.stringify({ widget_id: widgetId, revision, action_id: actionId, type: "checkout.start", payload: { cart_revision: cartRevision } }) });
