@@ -40,6 +40,8 @@ def validate_chart(data: dict[str, object], path: str) -> tuple[ChartNode | None
     rows: object = data.get("data")
     raw_series: object = data.get("series")
     axis: object = data.get("xAxis")
+    if isinstance(axis, str):
+        axis = {"dataKey": axis}
     if not isinstance(rows, list) or not isinstance(raw_series, list) or not isinstance(axis, dict) or not isinstance(axis.get("dataKey"), str) or not axis["dataKey"] or not rows or not raw_series:
         return None, [chart_issue("invalid_chart", path, "error", "Chart requires non-empty data, series, and an x-axis key.")]
     if len(rows) > 200 or len(raw_series) > 4:

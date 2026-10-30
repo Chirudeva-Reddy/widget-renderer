@@ -1,5 +1,5 @@
-import { StrictMode, useEffect, useRef, useState } from "react";
-import type { FormEvent, ReactElement } from "react";
+import { Component, StrictMode, useEffect, useRef, useState } from "react";
+import type { FormEvent, ReactElement, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
 import { acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
@@ -47,8 +47,15 @@ function PreviewNode({ node }: { node: Node }): ReactElement {
   </div>;
 }
 
+// Last line of defence: a render bug in one widget shows a fallback instead of blanking the page.
+class PreviewBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError(): { failed: boolean } { return { failed: true }; }
+  render(): ReactNode { return this.state.failed ? <p className="problem" role="alert">This widget could not be displayed.</p> : this.props.children; }
+}
+
 function Preview({ card }: { card: Card }): ReactElement {
-  return <PreviewNode node={card} />;
+  return <PreviewBoundary><PreviewNode node={card} /></PreviewBoundary>;
 }
 
 const confirmationSchema = z.object({ actionId: z.string().uuid(), cartRevision: z.string().regex(/^[a-f0-9]{64}$/), widgetId: z.string().min(1).max(128).optional(), widgetRevision: z.number().int().positive().optional() }).strict().refine((value) => (value.widgetId === undefined) === (value.widgetRevision === undefined));
