@@ -49,3 +49,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; color: #a0a69
 .table-scroll { max-width: 100%; overflow-x: auto; }.widget-table { border-collapse: collapse; width: 100%; font-size: 13px; }.widget-table th, .widget-table td { text-align: start; vertical-align: top; border-bottom: 1px solid #e3e8dd; padding: 10px 12px; }.widget-table th { background: #f3f5ef; }.widget-table .align-center { text-align: center; }.widget-table .align-end { text-align: end; }.widget-table .align-start { text-align: start; }
 .chart-figure { margin: 0; width: 100%; }.chart-scroll { overflow-x: auto; }.chart-scroll svg { display: block; width: 100%; min-width: 360px; }.chart-scroll text { font: 11px system-ui, sans-serif; fill: #53614e; }.chart-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; }.chart-legend span { display: inline-flex; align-items: center; gap: 5px; }.chart-legend i { width: 10px; height: 10px; display: inline-block; }.chart-data { margin-top: 12px; font-size: 12px; }.chart-data summary { cursor: pointer; font-weight: 600; }
 .widget-form { border: 1px solid #e3e8dd; border-radius: 8px; display: flex; flex-direction: column; gap: 12px; padding: 16px; }.widget-form legend { color: #687263; font-size: 11px; }.widget-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; font-weight: 600; }.widget-field input, .widget-field select { width: 100%; max-width: 100%; border: 1px solid #cdd6c8; border-radius: 6px; padding: 8px; background: #fff; font: inherit; }
+
+.ordering-item { border-block-end: 1px solid var(--line, #ddd); padding-block: 1rem; }
+.quantity-editor { display: flex; flex-wrap: wrap; align-items: end; gap: .65rem; margin-block-start: .75rem; }
+.quantity-editor label { display: grid; gap: .35rem; font-size: .85rem; }
+.quantity-editor input { width: 6rem; padding: .55rem; font: inherit; }
+.quantity-editor .notice { flex-basis: 100%; margin: 0; }
