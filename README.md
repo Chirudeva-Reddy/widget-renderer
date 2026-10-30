@@ -8,6 +8,17 @@ A food-ordering chat, in English and Arabic, where the agent replies with ChatKi
 - Node.js 20+
 - An OpenRouter API key (only the chat needs it; the payload playground works without one)
 
+## Run with Docker (quickest)
+
+Only Docker is needed. From the project root:
+
+```bash
+cp .env.example .env   # set OPEN_ROUTE_API_KEY for the chat; optional for the playground
+docker compose up --build
+```
+
+Then open http://localhost:5173.
+
 ## Run
 
 **1. Add your key.** From the project root:
