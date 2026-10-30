@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
-import { ConfirmationConflict, confirmOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, sendChat, startSession, updateCart, validatePayload } from "./api";
+import { ConfirmationConflict, confirmOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, startSession, streamChat, updateCart, validatePayload } from "./api";
 import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult } from "./api";
 import { Chart } from "./Chart";
 import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
@@ -62,7 +62,7 @@ function readConfirmation(): Confirmation | null {
 
 type DisplayedMenu = { menu: Menu; widgets: { en: Card; ar: Card }; ids: { en: string; ar: string } };
 
-type ChatMessage = { role: "user"; text: string } | { role: "assistant"; text: string; suggestion: ChatReply["suggestion"]; menuRevision: number; cartRevision: string; widget: Card | null; locale: "en" | "ar" };
+type ChatMessage = { role: "user"; text: string } | { role: "assistant"; text: string; suggestion: ChatReply["suggestion"]; menuRevision: number; cartRevision: string; widget: Card | null; locale: "en" | "ar"; streaming?: { index: number; node: Node }[]; incomplete?: boolean };
 
 function App(): ReactElement {
   const [source, setSource] = useState<string>(examples.welcome);
@@ -94,13 +94,23 @@ function App(): ReactElement {
     setChatError("");
     setChatMessages((messages: ChatMessage[]) => [...messages, { role: "user", text }]);
     setChatText("");
+    let streamed: boolean = false;
     try {
       const activeView: DisplayedMenu | null = activeMenuIndex >= 0 ? displayedMenu : null;
       const renderedViewId: string | null = activeView === null ? null : activeView.ids[chatLocale];
       const menuRevision: number = activeView === null ? menu.revision : activeView.menu.revision;
-      const reply: ChatReply = await sendChat(text, menuRevision, crypto.randomUUID(), chatLocale, renderedViewId);
-      setChatMessages((messages: ChatMessage[]) => [...messages, { role: "assistant", text: reply.text, suggestion: reply.suggestion, menuRevision: reply.menu_revision, cartRevision: reply.cart_revision, widget: reply.widget, locale: reply.locale }]);
+      const reply: ChatReply = await streamChat(text, menuRevision, crypto.randomUUID(), chatLocale, renderedViewId, (event) => {
+        if (event.type === "card") {
+          streamed = true;
+          setChatMessages((messages: ChatMessage[]) => [...messages, { role: "assistant", text: event.text ?? "", suggestion: null, menuRevision, cartRevision: "", widget: null, locale: chatLocale, streaming: [] }]);
+        } else {
+          setChatMessages((messages: ChatMessage[]) => messages.map((entry, index) => index === messages.length - 1 && entry.role === "assistant" && entry.streaming ? { ...entry, streaming: [...entry.streaming, event] } : entry));
+        }
+      });
+      const final: ChatMessage = { role: "assistant", text: reply.text, suggestion: reply.suggestion, menuRevision: reply.menu_revision, cartRevision: reply.cart_revision, widget: reply.widget, locale: reply.locale };
+      setChatMessages((messages: ChatMessage[]) => streamed ? [...messages.slice(0, -1), final] : [...messages, final]);
     } catch (error: unknown) {
+      if (streamed) setChatMessages((messages: ChatMessage[]) => messages.map((entry, index) => index === messages.length - 1 && entry.role === "assistant" ? { ...entry, incomplete: true } : entry));
       setChatText(text);
       setChatError(error instanceof Error ? error.message : "Unable to send the message.");
     } finally {
@@ -321,7 +331,7 @@ function App(): ReactElement {
     }
   }
 
-  const activeMenuIndex: number = chatMessages.reduce((last: number, message: ChatMessage, index: number) => message.role === "assistant" && message.widget !== null ? index : last, -1);
+  const activeMenuIndex: number = chatMessages.reduce((last: number, message: ChatMessage, index: number) => message.role === "assistant" && message.widget?.kind === "list" ? index : last, -1);
 
   return <main className="shell">
     <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><span className="badge">PLAYGROUND <span> / 01</span></span></header>
@@ -345,7 +355,7 @@ function App(): ReactElement {
     <section className="panel menu-panel" aria-labelledby="chat-title">
       <div className="menu-heading"><div><span className="step">RESTAURANT ASSISTANT / المساعد</span><h2 id="chat-title">Ask about the menu</h2></div><div><label htmlFor="chat-language">Language </label><select id="chat-language" value={chatLocale} onChange={(event) => setChatLocale(event.target.value as "en" | "ar")}><option value="en">English</option><option value="ar">العربية</option></select></div></div>
       <p className="menu-help">Ask in English or Arabic. Suggested cart changes require your approval.</p>
-      <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && message.widget && <div className="chat-widget" ref={index === activeMenuIndex ? orderingMenuRef : null} lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && displayedMenu && cart ? <OrderingMenu menu={displayedMenu.menu} cart={cart} card={displayedMenu.widgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onReview={reviewOrder} onChange={changeQuantity} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}
+      <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && (message.streaming || message.widget?.kind === "card") && <div className="summary-card" role="region" aria-label={message.locale === "ar" ? "ملخص المساعد" : "Assistant summary"} aria-busy={message.widget === null && !message.incomplete} tabIndex={0} lang={message.locale} dir={message.locale === "ar" ? "rtl" : "ltr"}>{message.widget ? <Preview card={message.widget} /> : <div className="widget-card">{message.streaming?.map((component) => <PreviewNode key={component.index} node={component.node} />)}</div>}{message.incomplete && <p className="problem" role="status">{message.locale === "ar" ? "هذا الملخص غير مكتمل." : "This summary is incomplete."}</p>}</div>}{message.role === "assistant" && message.widget?.kind === "list" && <div className="chat-widget" ref={index === activeMenuIndex ? orderingMenuRef : null} lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && displayedMenu && cart ? <OrderingMenu menu={displayedMenu.menu} cart={cart} card={displayedMenu.widgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onReview={reviewOrder} onChange={changeQuantity} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}
         {order ? <OrderReceipt order={order} locale={chatLocale} disabled={cartPending || !live} onStart={editOrder} /> : confirmation ? <ConfirmationRecovery locale={chatLocale} disabled={cartPending || !live} error={cartError} onRetry={() => { void confirmCart(); }} /> : checkoutRevision !== null && cart && <OrderReview cart={cart} reviewedRevision={checkoutRevision} locale={chatLocale} disabled={cartPending || !live} hasDrafts={Object.keys(quantityEdits).length > 0} error={cartError} onEdit={editOrder} onReview={reviewOrder} onConfirm={() => { void confirmCart(); }} />}
       </div>
       {chatError && <p className="notice" role="alert">{chatError}</p>}

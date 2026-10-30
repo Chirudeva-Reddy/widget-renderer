@@ -2,8 +2,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 from contextlib import closing
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
@@ -16,7 +18,7 @@ from app.events import Snapshot, read_session_snapshot
 from app.menu import MenuResponse
 from app.menu_views import MenuViewError, get_menu_view, read_menu_view
 from app.menu_widget import build_menu_widget
-from app.validator import ContainerNode
+from app.validator import ContainerNode, Node, validate_source
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -33,6 +35,8 @@ class ModelReply(BaseModel):
     text: str = Field(min_length=1, max_length=1200)
     suggestion: Suggestion | None
     show_menu: bool
+    # ponytail: widget JSON travels as a string because strict response schemas cannot express the recursive tree; validate_source parses it.
+    summary_card: str | None = Field(max_length=8000)
 
 
 class QuantityProposal(TypedDict):
@@ -137,7 +141,7 @@ def read_history(path: Path, token: str) -> list[ProviderMessage]:
         return read_session_history(connection, session_hash)
 
 
-async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], history: list[ProviderMessage]) -> ModelReply:
+def provider_request(text: str, context: str, locale: Literal["en", "ar"], history: list[ProviderMessage]) -> tuple[str, dict[str, object]]:
     key, model = provider_settings()
     prompt: str = (f"You are a restaurant assistant. Respond in {'English' if locale == 'en' else 'Arabic'} only, regardless of the language in the menu data. The menu and cart are authoritative. "
         "Return JSON with text, suggestion and show_menu. Set show_menu true whenever the customer asks to see the menu or available dishes; the app will display the menu, so keep the text brief. suggestion is null unless the customer explicitly asks to change "
@@ -149,11 +153,24 @@ async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], his
         "When the user explicitly requests a quantity and its target is known, return the suggestion directly; the Apply control already requires approval, so do not ask a redundant confirmation question. "
         "An order.confirm action contains an immutable receipt: use its stored items, prices, total and order ID even when the current cart is empty. Never recalculate a confirmed receipt using current menu prices, or claim a confirmed order was edited. "
         "Never suggest increasing a sold-out item. Resolve ordinal references ONLY using displayed_menu positions, never current_menu or a historical assistant message. If displayed_menu is null, ask for clarification on ordinal references. The current_menu and cart determine current availability, not the meaning of a displayed position. "
-        "Count every displayed dish row, including sold-out dishes. Ask a clarification if ambiguous. Never invent prices or dishes.")
+        "Count every displayed dish row, including sold-out dishes. Ask a clarification if ambiguous. Never invent prices or dishes. "
+        "summary_card is null unless a compact visual summary genuinely helps, such as when the customer asks for a cart or order summary or a short comparison of dishes. Never set it together with show_menu. "
+        "When set, summary_card is a JSON string (not an object) holding one read-only widget tree. The root is {\"type\":\"Card\",\"children\":[...]}. Allowed children: "
+        "Title, Text and Caption as {\"type\":\"Text\",\"value\":\"...\"} with optional weight normal, medium, semibold or bold; Badge as {\"type\":\"Badge\",\"label\":\"...\"}; Divider and Spacer as {\"type\":\"Divider\"}; "
+        "Row, Col and Box as {\"type\":\"Row\",\"gap\":2,\"children\":[...]} where gap is an optional integer 0 to 8 on Row and Col only; Table as {\"type\":\"Table\",\"children\":[{\"type\":\"Table.Row\",\"header\":true,\"children\":[{\"type\":\"Table.Cell\",\"align\":\"end\",\"children\":[...]}]}]}. "
+        "Text values are strings, containers always have a children array, and sibling key values, if used, must be unique. Use no other components or properties: no Button, Input, Select, Form, links, scripts, HTML, markdown or styling. "
+        "The card is display-only and cannot change the cart or place an order. Write every label in the reply language, using the supplied localized dish names. Copy prices, quantities, totals and order IDs exactly from current_menu, cart or an order.confirm receipt, "
+        "formatting price_minor as major units with its currency; omit any figure you were not given. Never present a card as a confirmed order unless it restates an order.confirm receipt. Keep it small: at most 30 components. "
+        "Example: {\"type\":\"Card\",\"children\":[{\"type\":\"Title\",\"value\":\"Your cart\"},{\"type\":\"Row\",\"children\":[{\"type\":\"Text\",\"value\":\"Hummus x2\"},{\"type\":\"Text\",\"value\":\"AED 36.00\",\"weight\":\"semibold\"}]}]}.")
+    return key, {"model": model, "messages": [{"role": "system", "content": prompt}, *history, {"role": "user", "content": f"Displayed and current restaurant data: {context}\nCustomer message: {text}"}], "response_format": {"type": "json_schema", "json_schema": {"name": "restaurant_reply", "strict": True, "schema": ModelReply.model_json_schema()}}, "provider": {"require_parameters": True}, "max_tokens": 1500}
+
+
+async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], history: list[ProviderMessage]) -> ModelReply:
+    key, body = provider_request(text, context, locale, history)
     async with httpx.AsyncClient(timeout=30.0) as client:
         for attempt in range(2):
             try:
-                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": model, "messages": [{"role": "system", "content": prompt}, *history, {"role": "user", "content": f"Displayed and current restaurant data: {context}\nCustomer message: {text}"}], "response_format": {"type": "json_schema", "json_schema": {"name": "restaurant_reply", "strict": True, "schema": ModelReply.model_json_schema()}}, "provider": {"require_parameters": True}, "max_tokens": 400})
+                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=body)
                 response.raise_for_status()
                 content: str = response.json()["choices"][0]["message"]["content"]
                 return ModelReply.model_validate_json(content)
@@ -172,6 +189,126 @@ async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], his
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as error:
                 raise ProviderError("OpenRouter returned an invalid response. Please try again.") from error
     raise ProviderError("OpenRouter request did not complete.")
+
+
+Emit = Callable[[str, object], None]
+CARD_START: re.Pattern[str] = re.compile(r'"summary_card"\s*:\s*"')
+TEXT_START: re.Pattern[str] = re.compile(r'"text"\s*:\s*"')
+CARD_ROOT: re.Pattern[str] = re.compile(r'\s*\{\s*"type"\s*:\s*"Card"\s*,\s*"children"\s*:\s*\[')
+
+
+def json_string_prefix(source: str, start: int) -> tuple[str, bool]:
+    """Decode the complete part of a JSON string literal whose opening quote ends at start."""
+    index: int = start
+    while index < len(source):
+        if source[index] == '"':
+            return json.loads(source[start - 1:index + 1]), True
+        if source[index] == "\\":
+            width: int = 6 if source[index + 1:index + 2] == "u" else 2
+            if index + width > len(source):
+                break
+            index += width
+        else:
+            index += 1
+    safe: str = source[start:index]
+    if re.search(r"\\u[dD][89abAB][0-9a-fA-F]{2}$", safe):
+        safe = safe[:-6]
+    return json.loads(f'"{safe}"'), False
+
+
+class SummaryCardStream:
+    """Emits each complete, validated top-level child of summary_card while the reply is still generating."""
+
+    def __init__(self, emit: Emit) -> None:
+        self.emit: Emit = emit
+        self.sent: int = 0
+        self.started: bool = False
+
+    def feed(self, content: str) -> None:
+        # ponytail: re-scans the whole buffer per chunk; O(n^2) but replies are capped at a few KB.
+        # ponytail: only streams cards written as {"type":"Card","children":[...; other key orders still render on the final event.
+        try:
+            card = CARD_START.search(content)
+            if card is None:
+                return
+            if not self.started:
+                self.started = True
+                text = TEXT_START.search(content, 0, card.start())
+                decoded, closed = json_string_prefix(content, text.end()) if text else ("", False)
+                self.emit("card", {"text": decoded if closed else None})
+            source, _ = json_string_prefix(content, card.end())
+            root = CARD_ROOT.match(source)
+            if root is None:
+                return
+            decoder = json.JSONDecoder()
+            position: int = root.end()
+            index: int = 0
+            while True:
+                while position < len(source) and source[position] in " \t\r\n,":
+                    position += 1
+                if position >= len(source) or source[position] == "]":
+                    return
+                child, position = decoder.raw_decode(source, position)
+                if index == self.sent:
+                    self.sent += 1
+                    node: ContainerNode | None = display_card(json.dumps({"type": "Card", "children": [child]}, ensure_ascii=False))
+                    if node is not None:
+                        self.emit("component", {"index": index, "node": node["children"][0]})
+                index += 1
+        except ValueError:
+            return
+
+
+async def stream_provider(text: str, context: str, locale: Literal["en", "ar"], history: list[ProviderMessage], emit: Emit) -> ModelReply:
+    # ponytail: no retry once streaming starts, components may already be on screen.
+    key, body = provider_request(text, context, locale, history)
+    card = SummaryCardStream(emit)
+    content: str = ""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client, client.stream("POST", "https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={**body, "stream": True}) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                chunk = json.loads(line[6:])
+                if "error" in chunk:
+                    raise ProviderError("OpenRouter stopped while generating the reply. Please try again.")
+                for choice in chunk.get("choices", []):
+                    content += choice.get("delta", {}).get("content") or ""
+                card.feed(content)
+        return ModelReply.model_validate_json(content)
+    except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as error:
+        logger.warning("OpenRouter stream failed", extra={"error_type": type(error).__name__})
+        raise ProviderError("The connection to OpenRouter was interrupted. Please try again.") from error
+    except httpx.HTTPStatusError as error:
+        logger.warning("OpenRouter rejected request", extra={"status_code": error.response.status_code})
+        raise ProviderError("OpenRouter could not process the request. Check the backend configuration.") from error
+    except (KeyError, IndexError, TypeError, ValueError, ValidationError) as error:
+        raise ProviderError("OpenRouter returned an invalid response. Please try again.") from error
+
+
+def interactive(node: Node) -> bool:
+    if node["kind"] in ("button", "input", "select", "form"):
+        return True
+    if node["kind"] == "table":
+        return any(interactive(child) for row in node["rows"] for cell in row["cells"] for child in cell["children"])
+    return "children" in node and any(interactive(child) for child in node["children"])
+
+
+def display_card(source: str) -> ContainerNode | None:
+    preview: ContainerNode | None = validate_source(source)["preview"]
+    return None if preview is None or preview["kind"] != "card" or interactive(preview) else preview
+
+
+def bind_summary_card(source: str | None) -> ContainerNode | None:
+    """Accept only a validated, display-only Card; anything else becomes a visible problem instead of a widget."""
+    if source is None:
+        return None
+    preview: ContainerNode | None = display_card(source)
+    if preview is None:
+        logger.warning("Rejected assistant summary card")
+        return {"kind": "card", "children": [{"kind": "problem", "message": "The assistant's summary could not be displayed."}]}
+    return preview
 
 
 class ActionContext(TypedDict):
@@ -212,10 +349,12 @@ def read_action_context(path: Path, token: str) -> ActionContext:
         return {"snapshot": read_session_snapshot(connection, session_hash), "completed_actions": actions, "actions_not_seen_in_latest_reply": unseen, "latest_assistant_proposal": proposal, "quantity_reference": resolve_quantity_reference(unseen, proposal), "history": history}
 
 
-async def respond(path: Path, token: str, message_id: str, text: str, menu_revision: int, locale: Literal["en", "ar"], rendered_view_id: str | None) -> ChatReply:
+async def respond(path: Path, token: str, message_id: str, text: str, menu_revision: int, locale: Literal["en", "ar"], rendered_view_id: str | None, emit: Emit | None = None) -> ChatReply:
     prior: ChatReply | None = await asyncio.to_thread(begin_turn, path, token, message_id, text, menu_revision, locale, rendered_view_id)
     if prior is not None:
         return prior
+    if emit is not None:
+        emit("start", {"message_id": message_id})
     try:
         action_context: ActionContext = await asyncio.to_thread(read_action_context, path, token)
         snapshot: Snapshot = action_context["snapshot"]
@@ -224,7 +363,8 @@ async def respond(path: Path, token: str, message_id: str, text: str, menu_revis
         localized_cart = [{"id": item["id"], "name": item["name_en"] if locale == "en" else item["name_ar"], "quantity": item["quantity"], "available": item["available"]} for item in snapshot["cart"]["items"]]
         displayed_items: list[dict[str, str | int | bool]] | None = None if displayed_menu is None else [{"id": item["id"], "position": item["position"], "name": item["name"][locale], "available": item["available"]} for item in displayed_menu["items"]]
         history: list[ProviderMessage] = action_context["history"]
-        reply: ModelReply = await ask_provider(text, json.dumps({"displayed_menu": displayed_items, "current_menu": localized_menu, "cart": localized_cart, "completed_actions": action_context["completed_actions"], "quantity_reference": action_context["quantity_reference"]}, ensure_ascii=False), locale, history)
+        context: str = json.dumps({"displayed_menu": displayed_items, "current_menu": localized_menu, "cart": localized_cart, "completed_actions": action_context["completed_actions"], "quantity_reference": action_context["quantity_reference"]}, ensure_ascii=False)
+        reply: ModelReply = await (ask_provider(text, context, locale, history) if emit is None else stream_provider(text, context, locale, history, emit))
         suggestion: QuantityProposal | None = None
         if reply.suggestion is not None:
             item = next((item for item in snapshot["menu"]["items"] if item["id"] == reply.suggestion.item_id), None)
@@ -234,10 +374,10 @@ async def respond(path: Path, token: str, message_id: str, text: str, menu_revis
             if not item["available"] and reply.suggestion.quantity > current:
                 raise ProviderError("The assistant suggested an unavailable item. Please try again.")
             suggestion = {"item_id": item["id"], "quantity": reply.suggestion.quantity}
-        result: ChatReply = {"text": reply.text, "suggestion": suggestion, "menu_revision": snapshot["menu"]["revision"], "cart_revision": snapshot["cart"]["revision"], "widget": build_menu_widget(snapshot["menu"], locale) if reply.show_menu else None, "locale": locale}
+        result: ChatReply = {"text": reply.text, "suggestion": suggestion, "menu_revision": snapshot["menu"]["revision"], "cart_revision": snapshot["cart"]["revision"], "widget": build_menu_widget(snapshot["menu"], locale) if reply.show_menu else bind_summary_card(reply.summary_card), "locale": locale}
         action_sequence: int = action_context["completed_actions"][-1]["sequence"] if action_context["completed_actions"] else 0
         await asyncio.to_thread(finish_turn, path, token, message_id, result, action_sequence)
         return result
-    except (ChatError, ProviderError, MenuViewError):
+    except (ChatError, ProviderError, MenuViewError, asyncio.CancelledError):
         await asyncio.to_thread(fail_turn, path, token, message_id)
         raise

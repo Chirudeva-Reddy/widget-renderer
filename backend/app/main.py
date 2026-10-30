@@ -133,6 +133,54 @@ async def chat(payload: ChatRequest, request: Request) -> JSONResponse:
     except ProviderError as error:
         return error_response(502, "provider_error", str(error))
 
+def sse(event: str, data: object) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/chat/stream", response_model=None)
+async def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse | JSONResponse:
+    if not is_local_demo_request(request, "chat"):
+        return error_response(403, "invalid_origin", "Chat requires the local application.")
+    queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+    task = asyncio.create_task(respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, lambda event, data: queue.put_nowait((event, data))))
+    started = asyncio.create_task(queue.get())
+    await asyncio.wait({task, started}, return_when=asyncio.FIRST_COMPLETED)
+    first: list[tuple[str, object]] = [started.result()] if started.done() else []
+    if not first:
+        started.cancel()
+        try:
+            task.result()
+        except SessionError:
+            return error_response(401, "session_required", "Start a session to use chat.")
+        except (ChatError, MenuViewError) as error:
+            return error_response(409, "chat_conflict", str(error))
+        except ProviderError as error:
+            return error_response(502, "provider_error", str(error))
+
+    async def stream() -> AsyncIterator[str]:
+        try:
+            for event, data in first:
+                yield sse(event, data)
+            while True:
+                waiting = asyncio.create_task(queue.get())
+                await asyncio.wait({task, waiting}, return_when=asyncio.FIRST_COMPLETED)
+                if waiting.done():
+                    yield sse(*waiting.result())
+                    continue
+                waiting.cancel()
+                while not queue.empty():
+                    yield sse(*queue.get_nowait())
+                try:
+                    yield sse("final", task.result())
+                except (ChatError, ProviderError, MenuViewError, SessionError) as error:
+                    yield sse("error", {"message": str(error)})
+                return
+        finally:
+            task.cancel()
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/events", response_model=None)
 async def events(request: Request) -> StreamingResponse | JSONResponse:
     token: str = request.cookies.get("restaurant_session", "")
