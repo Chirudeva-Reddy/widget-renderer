@@ -1,0 +1,137 @@
+{
+ "id": "rest-confirm-v1",
+ "name": "Restaurant Confirm",
+ "view": "<Card\n  size=\"md\"\n  theme=\"dark\"\n  confirm={blocked ? undefined : { label: labels.confirm, action: { type: \"order.confirm\", payload: { order_id }, handler: \"server\", loadingBehavior: \"container\" } }}\n  cancel={{ label: labels.edit, action: { type: \"order.edit\", payload: { order_id }, handler: \"server\", loadingBehavior: \"container\" } }}\n>\n  <Row gap={3}>\n    <Box size={44} radius=\"lg\" background=\"alpha-15\" align=\"center\" justify=\"center\">\n      <Icon name=\"check-circle\" size=\"xl\" />\n    </Box>\n    <Col gap={0}>\n      <Title value={labels.title} size=\"sm\" />\n      <Caption value={order_id} />\n    </Col>\n  </Row>\n  {notice && (\n    <Row gap={2} padding={{ x: 3, y: 2 }} radius=\"lg\" background=\"alpha-10\">\n      <Icon name=\"info\" size=\"sm\" color=\"warning\" />\n      <Text value={notice} size=\"sm\" />\n    </Row>\n  )}\n  <Col gap={2}>\n    {lines.map((line) => (\n      <Row key={line.id} gap={3}>\n        <Box size={36} radius=\"md\" background=\"alpha-10\" align=\"center\" justify=\"center\">\n          <Text value={line.emoji} />\n        </Box>\n        <Col flex={1} gap={0}>\n          <Text value={line.name} size=\"sm\" weight=\"semibold\" color={line.available ? \"prose\" : \"tertiary\"} />\n          <Caption value={line.qty_label} />\n        </Col>\n        {!line.available && <Badge label={labels.sold_out} color=\"danger\" size=\"sm\" />}\n        <Text value={line.line_total} size=\"sm\" weight=\"semibold\" />\n      </Row>\n    ))}\n  </Col>\n  <Divider color=\"subtle\" flush />\n  <Col gap={1}>\n    <Row>\n      <Text value={labels.subtotal} size=\"sm\" color=\"secondary\" />\n      <Spacer />\n      <Text value={subtotal} size=\"sm\" />\n    </Row>\n    <Row>\n      <Text value={labels.delivery} size=\"sm\" color=\"secondary\" />\n      <Spacer />\n      <Text value={delivery} size=\"sm\" color={delivery_free ? \"success\" : \"prose\"} />\n    </Row>\n    <Row>\n      <Text value={labels.total} weight=\"semibold\" />\n      <Spacer />\n      <Title value={total} size=\"md\" />\n    </Row>\n  </Col>\n</Card>\n",
+ "defaultState": {
+  "lang": "en",
+  "order_id": "ORD-1042",
+  "labels": {
+   "title": "Confirm your order",
+   "sold_out": "Sold out",
+   "subtotal": "Subtotal",
+   "delivery": "Delivery",
+   "total": "Total",
+   "confirm": "Place order",
+   "edit": "Edit order"
+  },
+  "notice": "Tabbouleh sold out. You removed it from your order.",
+  "lines": [
+   {
+    "id": "shawarma",
+    "emoji": "🌯",
+    "name": "Chicken Shawarma",
+    "qty_label": "1 × $8.50",
+    "line_total": "$8.50",
+    "available": true
+   },
+   {
+    "id": "falafel",
+    "emoji": "🧆",
+    "name": "Falafel Plate",
+    "qty_label": "2 × $7.00",
+    "line_total": "$14.00",
+    "available": true
+   }
+  ],
+  "subtotal": "$22.50",
+  "delivery": "Free",
+  "delivery_free": true,
+  "total": "$22.50",
+  "blocked": false
+ },
+ "states": [
+  {
+   "id": "rest-confirm-v1-0",
+   "name": "Arabic",
+   "value": {
+    "lang": "ar",
+    "order_id": "ORD-1042",
+    "labels": {
+     "title": "تأكيد الطلب",
+     "sold_out": "نفدت الكمية",
+     "subtotal": "الإجمالي الفرعي",
+     "delivery": "التوصيل",
+     "total": "الإجمالي",
+     "confirm": "أرسل الطلب",
+     "edit": "تعديل الطلب"
+    },
+    "notice": "نفدت التبولة وأزلتها من طلبك.",
+    "lines": [
+     {
+      "id": "shawarma",
+      "emoji": "🌯",
+      "name": "شاورما دجاج",
+      "qty_label": "1 × $8.50",
+      "line_total": "$8.50",
+      "available": true
+     },
+     {
+      "id": "falafel",
+      "emoji": "🧆",
+      "name": "طبق فلافل",
+      "qty_label": "2 × $7.00",
+      "line_total": "$14.00",
+      "available": true
+     }
+    ],
+    "subtotal": "$22.50",
+    "delivery": "مجاني",
+    "delivery_free": true,
+    "total": "$22.50",
+    "blocked": false
+   }
+  },
+  {
+   "id": "rest-confirm-v1-1",
+   "name": "Sold out in order",
+   "value": {
+    "lang": "en",
+    "order_id": "ORD-1042",
+    "labels": {
+     "title": "Confirm your order",
+     "sold_out": "Sold out",
+     "subtotal": "Subtotal",
+     "delivery": "Delivery",
+     "total": "Total without sold-out items",
+     "confirm": "Place order",
+     "edit": "Edit order"
+    },
+    "notice": "Tabbouleh sold out. Remove it to place your order.",
+    "lines": [
+     {
+      "id": "shawarma",
+      "emoji": "🌯",
+      "name": "Chicken Shawarma",
+      "qty_label": "1 × $8.50",
+      "line_total": "$8.50",
+      "available": true
+     },
+     {
+      "id": "falafel",
+      "emoji": "🧆",
+      "name": "Falafel Plate",
+      "qty_label": "2 × $7.00",
+      "line_total": "$14.00",
+      "available": true
+     },
+     {
+      "id": "tabbouleh",
+      "emoji": "🥗",
+      "name": "Tabbouleh",
+      "qty_label": "1 × $5.50",
+      "line_total": "$5.50",
+      "available": false
+     }
+    ],
+    "subtotal": "$22.50",
+    "delivery": "Free",
+    "delivery_free": true,
+    "total": "$22.50",
+    "blocked": true
+   }
+  }
+ ],
+ "schema": "import { z } from \"zod\"\n\nconst Line = z.strictObject({\n  id: z.string().min(1),\n  emoji: z.string(),\n  name: z.string().min(1),\n  qty_label: z.string(),\n  line_total: z.string(),\n  available: z.boolean(),\n})\n\nconst WidgetState = z.strictObject({\n  lang: z.enum([\"en\", \"ar\"]),\n  order_id: z.string().min(1),\n  labels: z.strictObject({\n    title: z.string(),\n    sold_out: z.string(),\n    subtotal: z.string(),\n    delivery: z.string(),\n    total: z.string(),\n    confirm: z.string(),\n    edit: z.string(),\n  }),\n  notice: z.string().optional(),\n  lines: z.array(Line).min(1),\n  subtotal: z.string(),\n  delivery: z.string(),\n  delivery_free: z.boolean(),\n  total: z.string(),\n  blocked: z.boolean(),\n})\n\nexport default WidgetState\n",
+ "jsonSchema": {},
+ "schemaMode": "zod"
+}

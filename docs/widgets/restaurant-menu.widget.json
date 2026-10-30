@@ -1,0 +1,156 @@
+{
+ "id": "rest-menu-v1",
+ "name": "Restaurant Menu",
+ "view": "<ListView theme=\"dark\" limit={items.length + 2}>\n  <ListViewItem key=\"header\" gap={0}>\n    <Box flex={1} direction=\"row\" align=\"center\" gap={3} padding={3} radius=\"xl\" background=\"surface-elevated-secondary\">\n      <Box size={44} radius=\"lg\" background=\"alpha-15\" align=\"center\" justify=\"center\">\n        <Title value=\"🍽️\" size=\"md\" />\n      </Box>\n      <Col flex={1} gap={0}>\n        <Title value={labels.title} size=\"sm\" />\n        <Caption value={labels.subtitle} />\n      </Col>\n      <Row gap={1}>\n        <Button\n          label=\"EN\"\n          size=\"sm\"\n          variant={lang === \"en\" ? \"solid\" : \"outline\"}\n          onClickAction={{ type: \"locale.set\", payload: { lang: \"en\" }, handler: \"server\", loadingBehavior: \"container\" }}\n        />\n        <Button\n          label=\"عربي\"\n          size=\"sm\"\n          variant={lang === \"ar\" ? \"solid\" : \"outline\"}\n          onClickAction={{ type: \"locale.set\", payload: { lang: \"ar\" }, handler: \"server\", loadingBehavior: \"container\" }}\n        />\n      </Row>\n    </Box>\n  </ListViewItem>\n  {items.map((item, i) => (\n    <ListViewItem key={item.id} gap={3}>\n      <Box size={48} radius=\"lg\" background=\"alpha-10\" align=\"center\" justify=\"center\">\n        <Title value={item.emoji} size=\"lg\" />\n      </Box>\n      <Col flex={1} gap={0}>\n        <Text value={item.name} size=\"sm\" weight=\"semibold\" color={item.available ? \"prose\" : \"tertiary\"} />\n        <Row gap={2}>\n          <Caption value={item.price} />\n          {!item.available && <Badge label={labels.sold_out} color=\"danger\" size=\"sm\" />}\n        </Row>\n      </Col>\n      <Row gap={1}>\n        <Button\n          label=\"−\"\n          size=\"sm\"\n          variant=\"outline\"\n          uniform\n          disabled={item.qty === 0}\n          onClickAction={{ type: \"cart.remove\", payload: { id: item.id, position: i + 1 }, handler: \"server\", loadingBehavior: \"self\" }}\n        />\n        <Box minWidth={24} align=\"center\">\n          <Text value={`${item.qty}`} size=\"sm\" weight=\"semibold\" />\n        </Box>\n        <Button\n          label=\"+\"\n          size=\"sm\"\n          style=\"primary\"\n          uniform\n          disabled={!item.available}\n          onClickAction={{ type: \"cart.add\", payload: { id: item.id, position: i + 1 }, handler: \"server\", loadingBehavior: \"self\" }}\n        />\n      </Row>\n    </ListViewItem>\n  ))}\n  <ListViewItem key=\"footer\" gap={0}>\n    <Box flex={1} gap={3} padding={3} radius=\"xl\" background=\"surface-elevated-secondary\" border={{ size: 1, color: \"subtle\" }}>\n      <Row>\n        <Text value={labels.your_order} weight=\"semibold\" />\n        <Spacer />\n        <Caption value={cart.item_count} />\n      </Row>\n      <Col gap={1}>\n        <Row>\n          <Caption value={cart.delivery_label} />\n          <Spacer />\n          <Caption value={cart.delivery_progress} />\n        </Row>\n        <Box height={6} radius=\"full\" background=\"alpha-15\">\n          <Box width={cart.delivery_percent} height=\"100%\" radius=\"full\" background=\"orange-400\" />\n        </Box>\n      </Col>\n      <Row>\n        <Text value={labels.subtotal} size=\"sm\" color=\"secondary\" />\n        <Spacer />\n        <Title value={cart.subtotal} size=\"sm\" />\n      </Row>\n      {cart.blocked && (\n        <Row gap={2}>\n          <Icon name=\"info\" size=\"sm\" color=\"warning\" />\n          <Text value={labels.blocked} size=\"sm\" color=\"warning\" />\n        </Row>\n      )}\n      <Button\n        label={labels.checkout}\n        style=\"primary\"\n        block\n        disabled={cart.blocked}\n        onClickAction={{ type: \"checkout.start\", payload: {}, handler: \"server\", loadingBehavior: \"container\" }}\n      />\n    </Box>\n  </ListViewItem>\n</ListView>\n",
+ "defaultState": {
+  "lang": "en",
+  "labels": {
+   "title": "Order food",
+   "subtitle": "Open now · 25–35 min",
+   "sold_out": "Sold out",
+   "your_order": "Your order",
+   "subtotal": "Subtotal",
+   "blocked": "Remove sold-out items to check out",
+   "checkout": "Checkout"
+  },
+  "items": [
+   {
+    "id": "shawarma",
+    "emoji": "🌯",
+    "name": "Chicken Shawarma",
+    "price": "$8.50",
+    "qty": 1,
+    "available": true
+   },
+   {
+    "id": "falafel",
+    "emoji": "🧆",
+    "name": "Falafel Plate",
+    "price": "$7.00",
+    "qty": 2,
+    "available": true
+   },
+   {
+    "id": "tabbouleh",
+    "emoji": "🥗",
+    "name": "Tabbouleh",
+    "price": "$5.50",
+    "qty": 1,
+    "available": false
+   }
+  ],
+  "cart": {
+   "item_count": "4 items",
+   "delivery_label": "Free delivery at $30.00",
+   "delivery_progress": "$28.00 / $30.00",
+   "delivery_percent": "93%",
+   "subtotal": "$28.00",
+   "blocked": true
+  }
+ },
+ "states": [
+  {
+   "id": "rest-menu-v1-0",
+   "name": "Arabic",
+   "value": {
+    "lang": "ar",
+    "labels": {
+     "title": "اطلب الطعام",
+     "subtitle": "مفتوح الآن · 25–35 دقيقة",
+     "sold_out": "نفدت الكمية",
+     "your_order": "طلبك",
+     "subtotal": "الإجمالي الفرعي",
+     "blocked": "أزل الأصناف التي نفدت لإتمام الطلب",
+     "checkout": "الدفع"
+    },
+    "items": [
+     {
+      "id": "shawarma",
+      "emoji": "🌯",
+      "name": "شاورما دجاج",
+      "price": "$8.50",
+      "qty": 1,
+      "available": true
+     },
+     {
+      "id": "falafel",
+      "emoji": "🧆",
+      "name": "طبق فلافل",
+      "price": "$7.00",
+      "qty": 2,
+      "available": true
+     },
+     {
+      "id": "tabbouleh",
+      "emoji": "🥗",
+      "name": "تبولة",
+      "price": "$5.50",
+      "qty": 1,
+      "available": false
+     }
+    ],
+    "cart": {
+     "item_count": "4 أصناف",
+     "delivery_label": "توصيل مجاني عند $30.00",
+     "delivery_progress": "$28.00 / $30.00",
+     "delivery_percent": "93%",
+     "subtotal": "$28.00",
+     "blocked": true
+    }
+   }
+  },
+  {
+   "id": "rest-menu-v1-1",
+   "name": "Ready to check out",
+   "value": {
+    "lang": "en",
+    "labels": {
+     "title": "Order food",
+     "subtitle": "Open now · 25–35 min",
+     "sold_out": "Sold out",
+     "your_order": "Your order",
+     "subtotal": "Subtotal",
+     "blocked": "Remove sold-out items to check out",
+     "checkout": "Checkout"
+    },
+    "items": [
+     {
+      "id": "shawarma",
+      "emoji": "🌯",
+      "name": "Chicken Shawarma",
+      "price": "$8.50",
+      "qty": 1,
+      "available": true
+     },
+     {
+      "id": "falafel",
+      "emoji": "🧆",
+      "name": "Falafel Plate",
+      "price": "$7.00",
+      "qty": 2,
+      "available": true
+     },
+     {
+      "id": "tabbouleh",
+      "emoji": "🥗",
+      "name": "Tabbouleh",
+      "price": "$5.50",
+      "qty": 0,
+      "available": false
+     }
+    ],
+    "cart": {
+     "item_count": "3 items",
+     "delivery_label": "Free delivery at $30.00",
+     "delivery_progress": "$22.50 / $30.00",
+     "delivery_percent": "75%",
+     "subtotal": "$22.50",
+     "blocked": false
+    }
+   }
+  }
+ ],
+ "schema": "import { z } from \"zod\"\n\nconst Item = z.strictObject({\n  id: z.string().min(1),\n  emoji: z.string(),\n  name: z.string().min(1),\n  price: z.string(),\n  qty: z.number().int().min(0).max(99),\n  available: z.boolean(),\n})\n\nconst WidgetState = z.strictObject({\n  lang: z.enum([\"en\", \"ar\"]),\n  labels: z.strictObject({\n    title: z.string(),\n    subtitle: z.string(),\n    sold_out: z.string(),\n    your_order: z.string(),\n    subtotal: z.string(),\n    blocked: z.string(),\n    checkout: z.string(),\n  }),\n  items: z.array(Item).min(1),\n  cart: z.strictObject({\n    item_count: z.string(),\n    delivery_label: z.string(),\n    delivery_progress: z.string(),\n    delivery_percent: z.string(),\n    subtotal: z.string(),\n    blocked: z.boolean(),\n  }),\n})\n\nexport default WidgetState\n",
+ "jsonSchema": {},
+ "schemaMode": "zod"
+}

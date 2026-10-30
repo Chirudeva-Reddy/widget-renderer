@@ -1,0 +1,252 @@
+{
+  "type": "Card",
+  "size": "md",
+  "theme": "dark",
+  "confirm": {
+    "label": "أرسل الطلب",
+    "action": {
+      "type": "order.confirm",
+      "payload": {
+        "order_id": "ORD-1042"
+      },
+      "handler": "server",
+      "loadingBehavior": "container"
+    }
+  },
+  "cancel": {
+    "label": "تعديل الطلب",
+    "action": {
+      "type": "order.edit",
+      "payload": {
+        "order_id": "ORD-1042"
+      },
+      "handler": "server",
+      "loadingBehavior": "container"
+    }
+  },
+  "children": [
+    {
+      "type": "Row",
+      "gap": 3,
+      "children": [
+        {
+          "type": "Box",
+          "size": 44,
+          "radius": "lg",
+          "background": "alpha-15",
+          "align": "center",
+          "justify": "center",
+          "children": [
+            {
+              "type": "Icon",
+              "name": "check-circle",
+              "size": "xl"
+            }
+          ]
+        },
+        {
+          "type": "Col",
+          "gap": 0,
+          "children": [
+            {
+              "type": "Title",
+              "value": "تأكيد الطلب",
+              "size": "sm"
+            },
+            {
+              "type": "Caption",
+              "value": "ORD-1042"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Row",
+      "gap": 2,
+      "padding": {
+        "x": 3,
+        "y": 2
+      },
+      "radius": "lg",
+      "background": "alpha-10",
+      "children": [
+        {
+          "type": "Icon",
+          "name": "info",
+          "size": "sm",
+          "color": "warning"
+        },
+        {
+          "type": "Text",
+          "value": "نفدت التبولة وأزلتها من طلبك.",
+          "size": "sm"
+        }
+      ]
+    },
+    {
+      "type": "Col",
+      "gap": 2,
+      "children": [
+        {
+          "type": "Row",
+          "key": "shawarma",
+          "gap": 3,
+          "children": [
+            {
+              "type": "Box",
+              "size": 36,
+              "radius": "md",
+              "background": "alpha-10",
+              "align": "center",
+              "justify": "center",
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "🌯"
+                }
+              ]
+            },
+            {
+              "type": "Col",
+              "flex": 1,
+              "gap": 0,
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "شاورما دجاج",
+                  "size": "sm",
+                  "weight": "semibold",
+                  "color": "prose"
+                },
+                {
+                  "type": "Caption",
+                  "value": "1 × $8.50"
+                }
+              ]
+            },
+            {
+              "type": "Text",
+              "value": "$8.50",
+              "size": "sm",
+              "weight": "semibold"
+            }
+          ]
+        },
+        {
+          "type": "Row",
+          "key": "falafel",
+          "gap": 3,
+          "children": [
+            {
+              "type": "Box",
+              "size": 36,
+              "radius": "md",
+              "background": "alpha-10",
+              "align": "center",
+              "justify": "center",
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "🧆"
+                }
+              ]
+            },
+            {
+              "type": "Col",
+              "flex": 1,
+              "gap": 0,
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "طبق فلافل",
+                  "size": "sm",
+                  "weight": "semibold",
+                  "color": "prose"
+                },
+                {
+                  "type": "Caption",
+                  "value": "2 × $7.00"
+                }
+              ]
+            },
+            {
+              "type": "Text",
+              "value": "$14.00",
+              "size": "sm",
+              "weight": "semibold"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Divider",
+      "color": "subtle",
+      "flush": true
+    },
+    {
+      "type": "Col",
+      "gap": 1,
+      "children": [
+        {
+          "type": "Row",
+          "children": [
+            {
+              "type": "Text",
+              "value": "الإجمالي الفرعي",
+              "size": "sm",
+              "color": "secondary"
+            },
+            {
+              "type": "Spacer"
+            },
+            {
+              "type": "Text",
+              "value": "$22.50",
+              "size": "sm"
+            }
+          ]
+        },
+        {
+          "type": "Row",
+          "children": [
+            {
+              "type": "Text",
+              "value": "التوصيل",
+              "size": "sm",
+              "color": "secondary"
+            },
+            {
+              "type": "Spacer"
+            },
+            {
+              "type": "Text",
+              "value": "مجاني",
+              "size": "sm",
+              "color": "success"
+            }
+          ]
+        },
+        {
+          "type": "Row",
+          "children": [
+            {
+              "type": "Text",
+              "value": "الإجمالي",
+              "weight": "semibold"
+            },
+            {
+              "type": "Spacer"
+            },
+            {
+              "type": "Title",
+              "value": "$22.50",
+              "size": "md"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

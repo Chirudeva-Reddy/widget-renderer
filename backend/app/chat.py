@@ -67,6 +67,7 @@ def initialize_chat(path: Path) -> None:
         columns: set[str] = {row[1] for row in connection.execute("PRAGMA table_info(chat_turns)").fetchall()}
         if "action_sequence" not in columns:
             connection.execute("ALTER TABLE chat_turns ADD COLUMN action_sequence INTEGER")
+            connection.execute("UPDATE chat_turns SET action_sequence = -1 WHERE status = 'complete'")
         if "rendered_view_id" not in columns:
             connection.execute("ALTER TABLE chat_turns ADD COLUMN rendered_view_id TEXT")
         if "locale" not in columns:
@@ -205,6 +206,8 @@ def read_action_context(path: Path, token: str) -> ActionContext:
         latest: HistoricalReply | None = cast(HistoricalReply, json.loads(history[-1]["content"])) if history else None
         known_sequence: int | None = 0 if latest is None else latest["completed_actions_through_sequence"]
         unseen: list[CompletedAction] | None = None if known_sequence is None else [action for action in actions if action["sequence"] > known_sequence]
+        if known_sequence == -1 and not unseen:
+            unseen = None
         proposal: QuantityProposal | None = None if latest is None else latest["reply"]["suggestion"]
         return {"snapshot": read_session_snapshot(connection, session_hash), "completed_actions": actions, "actions_not_seen_in_latest_reply": unseen, "latest_assistant_proposal": proposal, "quantity_reference": resolve_quantity_reference(unseen, proposal), "history": history}
 

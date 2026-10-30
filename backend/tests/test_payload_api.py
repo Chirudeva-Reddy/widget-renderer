@@ -166,6 +166,19 @@ class PayloadApiTests(unittest.TestCase):
         self.assertIsNone(legacy["actions_not_seen_in_latest_reply"])
         self.assertIsNone(legacy["quantity_reference"])
 
+    def test_legacy_migration_preserves_new_action_reference(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        snapshot = self.snapshot(cookie)
+        result = {"text": "Old reply", "suggestion": None, "menu_revision": snapshot["menu"]["revision"], "cart_revision": cart["revision"], "widget": None, "locale": "en"}
+        database = Path(self.directory.name) / "test.sqlite"
+        with sqlite3.connect(database) as connection:
+            session_hash = connection.execute("SELECT session_hash FROM menu_views WHERE id = ?", (snapshot["menu_view_ids"]["en"],)).fetchone()[0]
+            connection.execute("INSERT INTO chat_turns (session_hash, message_id, text, menu_revision, status, result_json, locale, action_sequence) VALUES (?, 'legacy', 'Hello', ?, 'complete', ?, 'en', -1)", (session_hash, snapshot["menu"]["revision"], json.dumps(result)))
+        self.assertIsNone(self.action_context(cookie)["quantity_reference"])
+        status, _, _ = self.restaurant_request("cart/quantity", {"action_id": "after-migration", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.action_context(cookie)["quantity_reference"], {"item_id": "hummus", "quantity": 1, "source": "completed_action"})
+
     def action_context(self, cookie: str) -> dict[str, Any]:
         result = subprocess.run(
             [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import read_action_context; print(json.dumps(read_action_context(Path(sys.argv[1]), sys.argv[2])))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1]],

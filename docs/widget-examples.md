@@ -483,6 +483,82 @@ Note that **"No" sends `enable: true`**. This bug is in OpenAI's own example. A 
 3. **Where nodes may appear:** `ListViewItem` is only valid directly under `ListView`, `Table.Row` under `Table`, and `Table.Cell` under `Table.Row`. A text-bearing component never has `children`.
 4. **Coercion:** numbers arrive as strings (`"label": "1"`, `"value": "28"`). Expect the reverse from the model too, e.g. `value: 8.5`. Coerce primitives to strings for text props.
 5. **`key` is the identity for updates.** Match old and new trees on `key` (ListViewItem, Row) and on `name` (form controls) so local state survives a replacement: an open Select, typed input, a "show more" toggle.
-6. **Sanitise CSS strings** in `background` and `color`. The gallery passes `url(...)` and gradients, so allowlist tokens, hex, `rgb()` and `linear-gradient` and reject everything else.
+6. **No raw CSS** in `background` or `color` (decided 30 Oct). Accept spec tokens only: surface, text, border, alpha and primitive colour names. The gallery passes `url(...)` and gradients, so models will too. Omit those with a warning (catalogue case M08).
 7. **Charts:** `xAxis.labels` maps raw values to display text. Each `series.dataKey` must exist in the data rows, and numeric values must be finite. Charts don't mirror in RTL (§4c).
 8. **Actions:** only dispatch `ActionConfig` objects with a string `type`. Honour `loadingBehavior` to block double sends.
+
+---
+
+## 8. Our restaurant widgets
+
+> **The styling is optional.** The brief judges the payload↔UI contract and bad-input handling, not looks. These fixtures matter for what they exercise: keyed rows, dish `position`, a sold-out dish that can only decrease, a Card `confirm` that is absent when blocked, one child order for EN/AR, and allowlisted actions. The emoji tiles and meter are decoration. Drop either rather than widen the validator to accept it. **No raw CSS:** `background` takes spec tokens only, so the gradients were removed (decided 30 Oct; see M08 in [payload-test-cases.md](payload-test-cases.md)). The model-shaped bad inputs are M01–M14 there.
+
+These are our own menu and confirmation widgets, designed from scratch. They borrow a few ideas from a mobile mock-up the user shared: dark cards, rounded icon tiles, a progress meter, and a clear action on every block. Everything is built from spec components only. Both widgets were rendered in ChatKit Studio in every state, and the compiled trees are saved as Studio reference fixtures. They are not valid fixtures for the current renderer: Box nodes and action properties are not supported yet.
+
+| | Template, schema and states (importable into Studio) | Compiled fixtures (`fixtures/studio/`) | Studio renders (`output/widget-review/`) |
+|---|---|---|---|
+| Menu | [restaurant-menu.widget.json](widgets/restaurant-menu.widget.json) | `restaurant-menu-en`, `-ar`, `-ready-en` | `restaurant-menu-en.png`, `restaurant-menu-ar-rtl.png` |
+| Confirm | [restaurant-confirm.widget.json](widgets/restaurant-confirm.widget.json) | `restaurant-confirm-en`, `-ar`, `-blocked-en` | `restaurant-confirm-en.png`, `-blocked-en.png`, `-ar-rtl.png` |
+
+All the screenshots still show the old gradient backgrounds, which have since been replaced with tokens. The confirm screenshots were also taken before two SPEC wording fixes, which the fixtures already include: "You removed it" in place of "was removed", and "Total without sold-out items" in the blocked state.
+
+### Menu: `ListView theme="dark"` (SPEC requires a ListView root for the menu)
+
+```
+┌ header item ─────────────────────────────────────────┐
+│ [🍽️]  Order food                         (EN)(عربي)  │  Box, surface-elevated-secondary, radius xl
+│       Open now · 25–35 min                           │
+└──────────────────────────────────────────────────────┘
+ [🌯]  Chicken Shawarma          (−)  1  (+)             dish item, position 1
+       $8.50
+ [🥗]  Tabbouleh                 (−)  1  (+ disabled)    sold out: dim name, badge, can only go down
+       $5.50  [Sold out]
+┌ footer item ─────────────────────────────────────────┐
+│ Your order                                   4 items │
+│ Free delivery at $30.00            $28.00 / $30.00   │
+│ ████████████████████████████░░  (93%)                │  progress meter
+│ Subtotal                                    $28.00   │
+│ ⓘ Remove sold-out items to check out                 │  only when blocked
+│ [            Checkout (disabled)            ]        │
+└──────────────────────────────────────────────────────┘
+```
+
+- **Emoji tiles, not photos.** Each dish has an `emoji` field, shown as a `Title` inside `Box size={48} radius="lg" background="alpha-10"`. This needs no image assets, and SPEC doesn't allow unrestricted image URLs. Switch to `Image` once the backend serves allowlisted dish photos.
+- **The stepper** is two `uniform` Buttons around a `Box minWidth={24}`, so the row doesn't jump as the count changes. `−` is disabled at 0 and `+` is disabled when the dish is sold out.
+- **The meter** is a track `Box` with a fill `Box width={percent}`. The backend computes `delivery_percent` and every display string from minor units. Templates never do maths, and nothing parses a display string.
+- **Header and footer items carry no `position`** (SPEC: positions count dish rows only). `limit={items.length + 2}` stops "Show more" from hiding the footer.
+
+### Confirm: `Card theme="dark"` with the Card's own `confirm`/`cancel`
+
+- **Footer buttons:** "Place order" is `confirm` and fires `order.confirm {order_id}`. "Edit order" is `cancel` and fires `order.edit {order_id}`. Using the Card's built-in footer keeps the buttons consistent and in place.
+- **Blocked state** (a sold-out line is still in the order): the template passes `confirm={blocked ? undefined : {...}}`. The compiled tree then **has no confirm key at all**, so only "Edit order" shows; the Card has no `disabled` option to use instead. The sold-out line stays visible with a dimmed name and a `Sold out` badge. The total is labelled "Total without sold-out items" (SPEC: never present an interim total as the payable total).
+- **Notice row:** `Row background="alpha-10" radius="lg"` with an `info` icon. It renders only when `notice` is set.
+
+### Interaction contract (matches SPEC allowlist)
+
+| Control | Action | Payload | Pending behaviour |
+|---|---|---|---|
+| `+` / `−` | `cart.add` / `cart.remove` | `{id, position}` | `self`: only that button disables |
+| EN / عربي | `locale.set` | `{lang}` | `container` |
+| Checkout | `checkout.start` | `{}` | `container`. Disabled while `cart.blocked` |
+| Place order | `order.confirm` | `{order_id}` | `container`. Absent while `blocked` |
+| Edit order | `order.edit` | `{order_id}` | `container` |
+
+The payloads carry no `version`. Per SPEC, the action envelope carries `widget_id`, `revision` and `action_id`. Rows and lines are keyed by dish `id`, so a sell-out or language switch updates them in place without remounting.
+
+### What Studio showed us (and what it couldn't)
+
+- **The host must be dark.** `ListView theme="dark"` sets dark *text* tokens but has no background prop. On Studio's light canvas the dish rows rendered invisible (white on white). The current renderer does not implement this theme; a dark host surface remains a planned requirement.
+- **RTL mirrors correctly** once `dir="rtl"` is set on the widget root: tiles, steppers, footer buttons and the meter all flip. This illustrates the planned "renderer owns mirroring" approach with one child order; it does not verify our renderer. (Studio needed a re-render after the attribute was added, so test mirroring on a fresh render.)
+- **Number-only strings flip inside RTL.** Studio showed `$28.00 / $30.00` as `$30.00 / $28.00`, and `1 × $8.50` as `$8.50 × 1`. A proposed fix is to wrap every text value in `<bdi>` (`dir=auto`); the current renderer does not do this. A string with no letters then resolves to LTR, and Arabic sentences stay RTL. The payload doesn't need to change. **We haven't verified this in our renderer yet.**
+- **Language buttons stay `[EN, عربي]` in one order;** the active one is `solid`. Under RTL they show in mirrored order, which is correct.
+
+### Not done (on purpose)
+
+- **Dish photos:** no assets, and URLs are restricted (see above).
+- **A post-order status card** (e.g. an ETA meter after "Place order"): not in the brief. The same meter pattern would work if we add one.
+- **Whole-row tap to add a dish:** possible with `ListViewItem.onClickAction`, but it would compete with the stepper buttons.
+
+### Studio tip
+
+To preview a widget, write a `.widget.json` (`{id, name, view, defaultState, states: [{id, name, value}], schema, jsonSchema: {}, schemaMode: "zod"}`) and open `https://widgets.chatkit.studio/import#<base64url(UTF-8 JSON), no padding>`. Each entry in `states` becomes a tab. The preview stays blank until `schema` is a valid zod module. Turn on Studio's dark preview (the moon icon) for `theme="dark"` widgets.

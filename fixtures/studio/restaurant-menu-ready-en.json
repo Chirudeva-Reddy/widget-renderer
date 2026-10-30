@@ -1,0 +1,501 @@
+{
+  "type": "ListView",
+  "theme": "dark",
+  "limit": 5,
+  "children": [
+    {
+      "type": "ListViewItem",
+      "key": "header",
+      "gap": 0,
+      "children": [
+        {
+          "type": "Box",
+          "flex": 1,
+          "direction": "row",
+          "align": "center",
+          "gap": 3,
+          "padding": 3,
+          "radius": "xl",
+          "background": "surface-elevated-secondary",
+          "children": [
+            {
+              "type": "Box",
+              "size": 44,
+              "radius": "lg",
+              "background": "alpha-15",
+              "align": "center",
+              "justify": "center",
+              "children": [
+                {
+                  "type": "Title",
+                  "value": "🍽️",
+                  "size": "md"
+                }
+              ]
+            },
+            {
+              "type": "Col",
+              "flex": 1,
+              "gap": 0,
+              "children": [
+                {
+                  "type": "Title",
+                  "value": "Order food",
+                  "size": "sm"
+                },
+                {
+                  "type": "Caption",
+                  "value": "Open now · 25–35 min"
+                }
+              ]
+            },
+            {
+              "type": "Row",
+              "gap": 1,
+              "children": [
+                {
+                  "type": "Button",
+                  "label": "EN",
+                  "size": "sm",
+                  "variant": "solid",
+                  "onClickAction": {
+                    "type": "locale.set",
+                    "payload": {
+                      "lang": "en"
+                    },
+                    "handler": "server",
+                    "loadingBehavior": "container"
+                  }
+                },
+                {
+                  "type": "Button",
+                  "label": "عربي",
+                  "size": "sm",
+                  "variant": "outline",
+                  "onClickAction": {
+                    "type": "locale.set",
+                    "payload": {
+                      "lang": "ar"
+                    },
+                    "handler": "server",
+                    "loadingBehavior": "container"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "ListViewItem",
+      "key": "shawarma",
+      "gap": 3,
+      "children": [
+        {
+          "type": "Box",
+          "size": 48,
+          "radius": "lg",
+          "background": "alpha-10",
+          "align": "center",
+          "justify": "center",
+          "children": [
+            {
+              "type": "Title",
+              "value": "🌯",
+              "size": "lg"
+            }
+          ]
+        },
+        {
+          "type": "Col",
+          "flex": 1,
+          "gap": 0,
+          "children": [
+            {
+              "type": "Text",
+              "value": "Chicken Shawarma",
+              "size": "sm",
+              "weight": "semibold",
+              "color": "prose"
+            },
+            {
+              "type": "Row",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "Caption",
+                  "value": "$8.50"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Row",
+          "gap": 1,
+          "children": [
+            {
+              "type": "Button",
+              "label": "−",
+              "size": "sm",
+              "variant": "outline",
+              "uniform": true,
+              "disabled": false,
+              "onClickAction": {
+                "type": "cart.remove",
+                "payload": {
+                  "id": "shawarma",
+                  "position": 1
+                },
+                "handler": "server",
+                "loadingBehavior": "self"
+              }
+            },
+            {
+              "type": "Box",
+              "minWidth": 24,
+              "align": "center",
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "1",
+                  "size": "sm",
+                  "weight": "semibold"
+                }
+              ]
+            },
+            {
+              "type": "Button",
+              "label": "+",
+              "size": "sm",
+              "style": "primary",
+              "uniform": true,
+              "disabled": false,
+              "onClickAction": {
+                "type": "cart.add",
+                "payload": {
+                  "id": "shawarma",
+                  "position": 1
+                },
+                "handler": "server",
+                "loadingBehavior": "self"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "ListViewItem",
+      "key": "falafel",
+      "gap": 3,
+      "children": [
+        {
+          "type": "Box",
+          "size": 48,
+          "radius": "lg",
+          "background": "alpha-10",
+          "align": "center",
+          "justify": "center",
+          "children": [
+            {
+              "type": "Title",
+              "value": "🧆",
+              "size": "lg"
+            }
+          ]
+        },
+        {
+          "type": "Col",
+          "flex": 1,
+          "gap": 0,
+          "children": [
+            {
+              "type": "Text",
+              "value": "Falafel Plate",
+              "size": "sm",
+              "weight": "semibold",
+              "color": "prose"
+            },
+            {
+              "type": "Row",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "Caption",
+                  "value": "$7.00"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Row",
+          "gap": 1,
+          "children": [
+            {
+              "type": "Button",
+              "label": "−",
+              "size": "sm",
+              "variant": "outline",
+              "uniform": true,
+              "disabled": false,
+              "onClickAction": {
+                "type": "cart.remove",
+                "payload": {
+                  "id": "falafel",
+                  "position": 2
+                },
+                "handler": "server",
+                "loadingBehavior": "self"
+              }
+            },
+            {
+              "type": "Box",
+              "minWidth": 24,
+              "align": "center",
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "2",
+                  "size": "sm",
+                  "weight": "semibold"
+                }
+              ]
+            },
+            {
+              "type": "Button",
+              "label": "+",
+              "size": "sm",
+              "style": "primary",
+              "uniform": true,
+              "disabled": false,
+              "onClickAction": {
+                "type": "cart.add",
+                "payload": {
+                  "id": "falafel",
+                  "position": 2
+                },
+                "handler": "server",
+                "loadingBehavior": "self"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "ListViewItem",
+      "key": "tabbouleh",
+      "gap": 3,
+      "children": [
+        {
+          "type": "Box",
+          "size": 48,
+          "radius": "lg",
+          "background": "alpha-10",
+          "align": "center",
+          "justify": "center",
+          "children": [
+            {
+              "type": "Title",
+              "value": "🥗",
+              "size": "lg"
+            }
+          ]
+        },
+        {
+          "type": "Col",
+          "flex": 1,
+          "gap": 0,
+          "children": [
+            {
+              "type": "Text",
+              "value": "Tabbouleh",
+              "size": "sm",
+              "weight": "semibold",
+              "color": "tertiary"
+            },
+            {
+              "type": "Row",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "Caption",
+                  "value": "$5.50"
+                },
+                {
+                  "type": "Badge",
+                  "label": "Sold out",
+                  "color": "danger",
+                  "size": "sm"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Row",
+          "gap": 1,
+          "children": [
+            {
+              "type": "Button",
+              "label": "−",
+              "size": "sm",
+              "variant": "outline",
+              "uniform": true,
+              "disabled": true,
+              "onClickAction": {
+                "type": "cart.remove",
+                "payload": {
+                  "id": "tabbouleh",
+                  "position": 3
+                },
+                "handler": "server",
+                "loadingBehavior": "self"
+              }
+            },
+            {
+              "type": "Box",
+              "minWidth": 24,
+              "align": "center",
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "0",
+                  "size": "sm",
+                  "weight": "semibold"
+                }
+              ]
+            },
+            {
+              "type": "Button",
+              "label": "+",
+              "size": "sm",
+              "style": "primary",
+              "uniform": true,
+              "disabled": true,
+              "onClickAction": {
+                "type": "cart.add",
+                "payload": {
+                  "id": "tabbouleh",
+                  "position": 3
+                },
+                "handler": "server",
+                "loadingBehavior": "self"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "ListViewItem",
+      "key": "footer",
+      "gap": 0,
+      "children": [
+        {
+          "type": "Box",
+          "flex": 1,
+          "gap": 3,
+          "padding": 3,
+          "radius": "xl",
+          "background": "surface-elevated-secondary",
+          "border": {
+            "size": 1,
+            "color": "subtle"
+          },
+          "children": [
+            {
+              "type": "Row",
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "Your order",
+                  "weight": "semibold"
+                },
+                {
+                  "type": "Spacer"
+                },
+                {
+                  "type": "Caption",
+                  "value": "3 items"
+                }
+              ]
+            },
+            {
+              "type": "Col",
+              "gap": 1,
+              "children": [
+                {
+                  "type": "Row",
+                  "children": [
+                    {
+                      "type": "Caption",
+                      "value": "Free delivery at $30.00"
+                    },
+                    {
+                      "type": "Spacer"
+                    },
+                    {
+                      "type": "Caption",
+                      "value": "$22.50 / $30.00"
+                    }
+                  ]
+                },
+                {
+                  "type": "Box",
+                  "height": 6,
+                  "radius": "full",
+                  "background": "alpha-15",
+                  "children": [
+                    {
+                      "type": "Box",
+                      "width": "75%",
+                      "height": "100%",
+                      "radius": "full",
+                      "background": "orange-400"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Row",
+              "children": [
+                {
+                  "type": "Text",
+                  "value": "Subtotal",
+                  "size": "sm",
+                  "color": "secondary"
+                },
+                {
+                  "type": "Spacer"
+                },
+                {
+                  "type": "Title",
+                  "value": "$22.50",
+                  "size": "sm"
+                }
+              ]
+            },
+            {
+              "type": "Button",
+              "label": "Checkout",
+              "style": "primary",
+              "block": true,
+              "disabled": false,
+              "onClickAction": {
+                "type": "checkout.start",
+                "payload": {},
+                "handler": "server",
+                "loadingBehavior": "container"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

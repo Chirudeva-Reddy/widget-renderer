@@ -83,7 +83,7 @@ function App(): ReactElement {
   async function submitChat(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     const text: string = chatText.trim();
-    if (!text || menu === null || !live) return;
+    if (!text || chatPending || menu === null || !live) return;
     setChatPending(true);
     setChatError("");
     setChatMessages((messages: ChatMessage[]) => [...messages, { role: "user", text }]);
@@ -343,7 +343,7 @@ function App(): ReactElement {
         {order ? <OrderReceipt order={order} locale={chatLocale} disabled={cartPending || !live} onStart={editOrder} /> : confirmation ? <ConfirmationRecovery locale={chatLocale} disabled={cartPending || !live} error={cartError} onRetry={() => { void confirmCart(); }} /> : checkoutRevision !== null && cart && <OrderReview cart={cart} reviewedRevision={checkoutRevision} locale={chatLocale} disabled={cartPending || !live} hasDrafts={Object.keys(quantityEdits).length > 0} error={cartError} onEdit={editOrder} onReview={reviewOrder} onConfirm={() => { void confirmCart(); }} />}
       </div>
       {chatError && <p className="notice" role="alert">{chatError}</p>}
-      <form className="chat-form" onSubmit={(event) => { void submitChat(event); }}><label htmlFor="chat-input">Your message</label><textarea id="chat-input" value={chatText} onChange={(event) => setChatText(event.target.value)} maxLength={2000} rows={2} /><button type="submit" disabled={chatPending || !live || !chatText.trim()}>{chatPending ? "Thinking…" : "Send message"}</button></form>
+      <form className="chat-form" onSubmit={(event) => { void submitChat(event); }}><label htmlFor="chat-input">Your message</label><textarea id="chat-input" value={chatText} onChange={(event) => setChatText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={2000} rows={2} /><button type="submit" className="send-button" aria-label={chatPending ? "Thinking…" : "Send message"} aria-busy={chatPending} disabled={chatPending || !live || !chatText.trim()}><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M8 7h9v9" /></svg></button></form>
     </section>
     <section className="panel menu-panel" aria-labelledby="menu-title">
       <div className="menu-heading"><div><span className="step">RESTAURANT / المطعم</span><h2 id="menu-title">Demo menu <span lang="ar" dir="rtl"> / قائمة الطعام</span></h2></div><button type="button" onClick={() => { void refreshMenu(); }} disabled={menuPending}>Refresh menu</button></div>
