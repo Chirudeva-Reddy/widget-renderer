@@ -74,6 +74,7 @@ def sell_out_item(path: Path, item_id: str) -> MenuResponse:
         if row[0] == 1:
             connection.execute("UPDATE menu_items SET available = 0 WHERE id = ?", (item_id,))
             connection.execute("UPDATE menu_metadata SET revision = revision + 1 WHERE id = 1")
+            connection.execute("UPDATE checkout_views SET consumed = 1 WHERE session_hash IN (SELECT session_hash FROM cart_items WHERE item_id = ?)", (item_id,))
     return get_menu(path)
 
 
@@ -86,4 +87,5 @@ def restock_item(path: Path, item_id: str) -> MenuResponse:
         if row[0] == 0:
             connection.execute("UPDATE menu_items SET available = 1 WHERE id = ?", (item_id,))
             connection.execute("UPDATE menu_metadata SET revision = revision + 1 WHERE id = 1")
+            connection.execute("UPDATE checkout_views SET consumed = 1 WHERE session_hash IN (SELECT session_hash FROM cart_items WHERE item_id = ?)", (item_id,))
     return get_menu(path)

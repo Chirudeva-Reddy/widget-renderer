@@ -131,6 +131,74 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual(self.restaurant_request("actions", updated, cookie, "widget-action")[1]["items"][0]["quantity"], 2)
         self.assertEqual(len(self.action_context(cookie)["completed_actions"]), 2)
 
+    def test_widget_checkout_confirmation_and_retries(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "checkout-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        widget = self.widget("en", cookie)
+        start = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "start-checkout", "type": "checkout.start", "payload": {"cart_revision": cart["revision"]}}
+        self.assertEqual(self.restaurant_request("actions", start, other, "widget-action")[0], 409)
+        status, view, _ = self.restaurant_request("actions", start, cookie, "widget-action")
+        self.assertEqual((status, view["cart"]), (200, cart))
+        self.assertEqual(self.restaurant_request("actions", start, cookie, "widget-action")[1], view)
+        confirm = {"widget_id": view["widget_id"], "revision": view["revision"], "action_id": "confirm-checkout", "type": "order.confirm", "payload": {"cart_revision": cart["revision"]}}
+        self.assertEqual(self.restaurant_request("actions", confirm, other, "widget-action")[0], 409)
+        attempts = [confirm, {**confirm, "action_id": "another-confirm"}]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda item: self.restaurant_request("actions", item, cookie, "widget-action"), attempts))
+        self.assertEqual(sorted(result[0] for result in results), [200, 409])
+        winner = next(index for index, result in enumerate(results) if result[0] == 200)
+        order = results[winner][1]
+        self.assertEqual(self.restaurant_request("actions", attempts[winner], cookie, "widget-action")[1], order)
+        self.assertEqual(self.restaurant_request("actions", {**attempts[winner], "payload": {"cart_revision": "0" * 64}}, cookie, "widget-action")[0], 409)
+        self.assertEqual(len([action for action in self.action_context(cookie)["completed_actions"] if action["type"] == "order.confirm"]), 1)
+        _, new_cart, _ = self.restaurant_request("cart/quantity", {"action_id": "checkout-add-again", "item_id": "hummus", "quantity": 1, "cart_revision": self.snapshot(cookie)["cart"]["revision"]}, cookie, "cart")
+        self.assertEqual(new_cart["revision"], cart["revision"])
+        self.assertEqual(self.restaurant_request("actions", {**confirm, "action_id": "replay-old-review"}, cookie, "widget-action")[0], 409)
+
+    def test_widget_checkout_blocks_sold_out_item(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "stock-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        widget = self.widget("en", cookie)
+        start = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "stock-start", "type": "checkout.start", "payload": {"cart_revision": cart["revision"]}}
+        _, view, _ = self.restaurant_request("actions", start, cookie, "widget-action")
+        self.assertEqual(self.restaurant_request("demo/menu/hummus/sell-out", {}, cookie, "sell-out")[0], 200)
+        try:
+            confirm = {"widget_id": view["widget_id"], "revision": 1, "action_id": "stock-confirm", "type": "order.confirm", "payload": {"cart_revision": cart["revision"]}}
+            self.assertEqual(self.restaurant_request("actions", confirm, cookie, "widget-action")[0], 409)
+            self.assertFalse(self.snapshot(cookie)["cart"]["can_checkout"])
+        finally:
+            self.assertEqual(self.restaurant_request("demo/menu/hummus/restock", {}, cookie, "restock")[0], 200)
+
+    def test_checkout_view_stays_invalid_after_cart_returns_and_edit(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "revert-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        widget = self.widget("en", cookie)
+        start = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "revert-start", "type": "checkout.start", "payload": {"cart_revision": cart["revision"]}}
+        _, view, _ = self.restaurant_request("actions", start, cookie, "widget-action")
+        _, changed, _ = self.restaurant_request("cart/quantity", {"action_id": "revert-up", "item_id": "hummus", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")
+        _, restored, _ = self.restaurant_request("cart/quantity", {"action_id": "revert-down", "item_id": "hummus", "quantity": 1, "cart_revision": changed["revision"]}, cookie, "cart")
+        self.assertEqual(restored["revision"], cart["revision"])
+        confirm = {"widget_id": view["widget_id"], "revision": 1, "action_id": "revert-confirm", "type": "order.confirm", "payload": {"cart_revision": cart["revision"]}}
+        self.assertEqual(self.restaurant_request("actions", confirm, cookie, "widget-action")[0], 409)
+        widget = self.widget("en", cookie)
+        _, view, _ = self.restaurant_request("actions", {**start, "widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "edit-start"}, cookie, "widget-action")
+        edit = {**confirm, "widget_id": view["widget_id"], "action_id": "edit-review", "type": "order.edit"}
+        self.assertEqual(self.restaurant_request("actions", edit, cookie, "widget-action")[1], {"edited": True})
+        self.assertEqual(self.restaurant_request("actions", edit, cookie, "widget-action")[1], {"edited": True})
+        self.assertEqual(self.restaurant_request("actions", {**confirm, "widget_id": view["widget_id"], "action_id": "edit-confirm"}, cookie, "widget-action")[0], 409)
+
+    def test_widget_checkout_rejects_stale_cart(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "stale-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        widget = self.widget("en", cookie)
+        start = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "stale-start", "type": "checkout.start", "payload": {"cart_revision": cart["revision"]}}
+        _, view, _ = self.restaurant_request("actions", start, cookie, "widget-action")
+        self.restaurant_request("cart/quantity", {"action_id": "stale-change", "item_id": "hummus", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")
+        confirm = {"widget_id": view["widget_id"], "revision": 1, "action_id": "stale-confirm", "type": "order.confirm", "payload": {"cart_revision": cart["revision"]}}
+        self.assertEqual(self.restaurant_request("actions", confirm, cookie, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", {**start, "action_id": "late-start"}, cookie, "widget-action")[0], 409)
+
     def test_concurrent_quantity_changes_reject_stale_cart(self) -> None:
         _, cart, cookie = self.restaurant_request("session", {}, "", "session")
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/menu") as response:

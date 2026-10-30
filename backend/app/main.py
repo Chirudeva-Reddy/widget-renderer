@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.events import issue_menu_widget, read_snapshot
 from app.widgets import WidgetError, acknowledge_widget, initialize_widgets
-from app.widget_actions import WidgetActionError, apply_widget_quantity, initialize_widget_actions
+from app.widget_actions import WidgetActionError, apply_widget_quantity, confirm_widget_order, edit_widget_order, initialize_widget_actions, start_checkout
 from app.menu_views import MenuViewError, initialize_menu_views
 from app.chat import ChatError, ProviderError, initialize_chat, respond
 
@@ -258,13 +258,34 @@ class WidgetQuantityRequest(BaseModel):
     payload: WidgetQuantityPayload
 
 
+class WidgetCheckoutPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    cart_revision: str = Field(min_length=64, max_length=64)
+
+
+class WidgetCheckoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    action_id: str = Field(min_length=1, max_length=128)
+    type: Literal["checkout.start", "order.confirm", "order.edit"]
+    payload: WidgetCheckoutPayload
+
+
 @app.post("/api/actions", response_model=None)
-def widget_action(payload: WidgetQuantityRequest, request: Request) -> JSONResponse:
+def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest, request: Request) -> JSONResponse:
     if not is_local_demo_request(request, "widget-action"):
         return error_response(403, "invalid_origin", "Widget actions require the local application.")
     action = {"widget_id": payload.widget_id, "revision": payload.revision, "action_id": payload.action_id, "type": payload.type, **payload.payload.model_dump()}
     try:
-        return JSONResponse(content=apply_widget_quantity(DATABASE_PATH, request.cookies.get("restaurant_session", ""), action))
+        token: str = request.cookies.get("restaurant_session", "")
+        if payload.type == "cart.set_quantity":
+            return JSONResponse(content=apply_widget_quantity(DATABASE_PATH, token, action))
+        if payload.type == "checkout.start":
+            return JSONResponse(content=start_checkout(DATABASE_PATH, token, action))
+        if payload.type == "order.confirm":
+            return JSONResponse(content=confirm_widget_order(DATABASE_PATH, token, action))
+        return JSONResponse(content=edit_widget_order(DATABASE_PATH, token, action))
     except SessionError:
         return error_response(401, "session_required", "Start a session to use widget actions.")
     except (WidgetActionError, CartError) as error:
