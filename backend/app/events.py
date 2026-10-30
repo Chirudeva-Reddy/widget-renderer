@@ -21,6 +21,10 @@ def read_snapshot(path: Path, token: str) -> Snapshot:
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
         session_hash: str = require_session(connection, token)
-        menu: MenuResponse = read_menu(connection)
-        cart: Cart = read_cart(connection, session_hash)
-        return {"menu": menu, "cart": cart, "menu_view_ids": {"en": issue_menu_view(connection, session_hash, menu, "en"), "ar": issue_menu_view(connection, session_hash, menu, "ar")}, "menu_widgets": {locale: build_menu_widget(menu, locale) for locale in ("en", "ar")}}
+        return read_session_snapshot(connection, session_hash)
+
+
+def read_session_snapshot(connection: sqlite3.Connection, session_hash: str) -> Snapshot:
+    menu: MenuResponse = read_menu(connection)
+    cart: Cart = read_cart(connection, session_hash)
+    return {"menu": menu, "cart": cart, "menu_view_ids": {"en": issue_menu_view(connection, session_hash, menu, "en"), "ar": issue_menu_view(connection, session_hash, menu, "ar")}, "menu_widgets": {locale: build_menu_widget(menu, locale) for locale in ("en", "ar")}}

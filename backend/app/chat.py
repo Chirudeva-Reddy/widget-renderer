@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
@@ -10,8 +11,8 @@ import httpx
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.cart import require_session
-from app.events import read_snapshot
+from app.cart import CompletedAction, read_completed_actions, require_session
+from app.events import Snapshot, read_session_snapshot
 from app.menu import MenuResponse
 from app.menu_views import MenuViewError, get_menu_view, read_menu_view
 from app.menu_widget import build_menu_widget
@@ -34,9 +35,18 @@ class ModelReply(BaseModel):
     show_menu: bool
 
 
+class QuantityProposal(TypedDict):
+    item_id: str
+    quantity: int
+
+
+class QuantityReference(QuantityProposal):
+    source: Literal["completed_action", "assistant_proposal"]
+
+
 class ChatReply(TypedDict):
     text: str
-    suggestion: dict[str, str | int] | None
+    suggestion: QuantityProposal | None
     menu_revision: int
     cart_revision: str
     widget: ContainerNode | None
@@ -55,6 +65,8 @@ def initialize_chat(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE IF NOT EXISTS chat_turns (session_hash TEXT NOT NULL, message_id TEXT NOT NULL, text TEXT NOT NULL, menu_revision INTEGER NOT NULL, status TEXT NOT NULL, result_json TEXT, locale TEXT NOT NULL DEFAULT 'en', PRIMARY KEY (session_hash, message_id))")
         columns: set[str] = {row[1] for row in connection.execute("PRAGMA table_info(chat_turns)").fetchall()}
+        if "action_sequence" not in columns:
+            connection.execute("ALTER TABLE chat_turns ADD COLUMN action_sequence INTEGER")
         if "rendered_view_id" not in columns:
             connection.execute("ALTER TABLE chat_turns ADD COLUMN rendered_view_id TEXT")
         if "locale" not in columns:
@@ -77,10 +89,10 @@ def begin_turn(path: Path, token: str, message_id: str, text: str, menu_revision
         return None
 
 
-def finish_turn(path: Path, token: str, message_id: str, reply: ChatReply) -> None:
+def finish_turn(path: Path, token: str, message_id: str, reply: ChatReply, action_sequence: int) -> None:
     with sqlite3.connect(path) as connection:
         session_hash: str = require_session(connection, token)
-        connection.execute("UPDATE chat_turns SET status = 'complete', result_json = ? WHERE session_hash = ? AND message_id = ?", (json.dumps(reply, ensure_ascii=False), session_hash, message_id))
+        connection.execute("UPDATE chat_turns SET status = 'complete', result_json = ?, action_sequence = ? WHERE session_hash = ? AND message_id = ?", (json.dumps(reply, ensure_ascii=False), action_sequence, session_hash, message_id))
 
 
 def fail_turn(path: Path, token: str, message_id: str) -> None:
@@ -103,15 +115,25 @@ class ProviderMessage(TypedDict):
     content: str
 
 
+class HistoricalReply(TypedDict):
+    reply: ChatReply
+    completed_actions_through_sequence: int | None
+
+
+def read_session_history(connection: sqlite3.Connection, session_hash: str) -> list[ProviderMessage]:
+    rows: list[tuple[str, str, int | None]] = connection.execute("SELECT text, result_json, action_sequence FROM chat_turns WHERE session_hash = ? AND status = 'complete' ORDER BY rowid DESC LIMIT 20", (session_hash,)).fetchall()
+    messages: list[ProviderMessage] = []
+    for text, result_json, action_sequence in reversed(rows):
+        historical_reply: HistoricalReply = {"reply": cast(ChatReply, json.loads(result_json)), "completed_actions_through_sequence": action_sequence}
+        messages.extend([{"role": "user", "content": text}, {"role": "assistant", "content": json.dumps(historical_reply, ensure_ascii=False)}])
+    return messages
+
+
 def read_history(path: Path, token: str) -> list[ProviderMessage]:
     """Return the latest 20 completed turns in conversation order for this session."""
     with sqlite3.connect(path) as connection:
         session_hash: str = require_session(connection, token)
-        rows = connection.execute("SELECT text, result_json FROM chat_turns WHERE session_hash = ? AND status = 'complete' ORDER BY rowid DESC LIMIT 20", (session_hash,)).fetchall()
-        messages: list[ProviderMessage] = []
-        for text, result_json in reversed(rows):
-            messages.extend([{"role": "user", "content": text}, {"role": "assistant", "content": result_json}])
-        return messages
+        return read_session_history(connection, session_hash)
 
 
 async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], history: list[ProviderMessage]) -> ModelReply:
@@ -119,7 +141,12 @@ async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], his
     prompt: str = (f"You are a restaurant assistant. Respond in {'English' if locale == 'en' else 'Arabic'} only, regardless of the language in the menu data. The menu and cart are authoritative. "
         "Return JSON with text, suggestion and show_menu. Set show_menu true whenever the customer asks to see the menu or available dishes; the app will display the menu, so keep the text brief. suggestion is null unless the customer explicitly asks to change "
         "a dish quantity. Otherwise use {item_id, quantity} with a supplied dish ID and the desired total quantity. "
-        "Never claim a change or order was completed; suggestions require the customer to apply them. "
+        "Only completed_actions supplied by the backend prove a past control action completed. You may acknowledge those actions, but new suggestions still require the customer to apply them; never claim a new proposal has executed. "
+        "quantity_reference is the backend-resolved item for implicit requests such as make that three. For such an implicit follow-up, use its item_id when present, not a different dish from history or the current cart. "
+        "An explicit dish name in the current message takes precedence; ordinal references use displayed_menu as specified below. If no reference exists and the target is unclear, ask for clarification. "
+        "A quantity_reference with source assistant_proposal identifies a conversational proposal, not an executed action. Only completed_actions prove execution. "
+        "When the user explicitly requests a quantity and its target is known, return the suggestion directly; the Apply control already requires approval, so do not ask a redundant confirmation question. "
+        "An order.confirm action contains an immutable receipt: use its stored items, prices, total and order ID even when the current cart is empty. Never recalculate a confirmed receipt using current menu prices, or claim a confirmed order was edited. "
         "Never suggest increasing a sold-out item. Resolve ordinal references ONLY using displayed_menu positions, never current_menu or a historical assistant message. If displayed_menu is null, ask for clarification on ordinal references. The current_menu and cart determine current availability, not the meaning of a displayed position. "
         "Count every displayed dish row, including sold-out dishes. Ask a clarification if ambiguous. Never invent prices or dishes.")
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -146,19 +173,56 @@ async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], his
     raise ProviderError("OpenRouter request did not complete.")
 
 
+class ActionContext(TypedDict):
+    snapshot: Snapshot
+    completed_actions: list[CompletedAction]
+    actions_not_seen_in_latest_reply: list[CompletedAction] | None
+    latest_assistant_proposal: QuantityProposal | None
+    quantity_reference: QuantityReference | None
+    history: list[ProviderMessage]
+
+
+def resolve_quantity_reference(unseen: list[CompletedAction] | None, proposal: QuantityProposal | None) -> QuantityReference | None:
+    if unseen is None:
+        return None
+    if unseen:
+        latest: CompletedAction = unseen[-1]
+        if latest["type"] == "cart.set_quantity":
+            return {"item_id": latest["item_id"], "quantity": latest["quantity"], "source": "completed_action"}
+        return None
+    if proposal is None:
+        return None
+    return {"item_id": proposal["item_id"], "quantity": proposal["quantity"], "source": "assistant_proposal"}
+
+
+def read_action_context(path: Path, token: str) -> ActionContext:
+    """Read action history and restaurant state at the same transaction boundary."""
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        session_hash: str = require_session(connection, token)
+        actions: list[CompletedAction] = read_completed_actions(connection, session_hash)
+        history: list[ProviderMessage] = read_session_history(connection, session_hash)
+        latest: HistoricalReply | None = cast(HistoricalReply, json.loads(history[-1]["content"])) if history else None
+        known_sequence: int | None = 0 if latest is None else latest["completed_actions_through_sequence"]
+        unseen: list[CompletedAction] | None = None if known_sequence is None else [action for action in actions if action["sequence"] > known_sequence]
+        proposal: QuantityProposal | None = None if latest is None else latest["reply"]["suggestion"]
+        return {"snapshot": read_session_snapshot(connection, session_hash), "completed_actions": actions, "actions_not_seen_in_latest_reply": unseen, "latest_assistant_proposal": proposal, "quantity_reference": resolve_quantity_reference(unseen, proposal), "history": history}
+
+
 async def respond(path: Path, token: str, message_id: str, text: str, menu_revision: int, locale: Literal["en", "ar"], rendered_view_id: str | None) -> ChatReply:
     prior: ChatReply | None = await asyncio.to_thread(begin_turn, path, token, message_id, text, menu_revision, locale, rendered_view_id)
     if prior is not None:
         return prior
     try:
-        snapshot = await asyncio.to_thread(read_snapshot, path, token)
+        action_context: ActionContext = await asyncio.to_thread(read_action_context, path, token)
+        snapshot: Snapshot = action_context["snapshot"]
         displayed_menu: MenuResponse | None = await asyncio.to_thread(get_menu_view, path, token, rendered_view_id, menu_revision, locale)
         localized_menu = [{"id": item["id"], "position": item["position"], "name": item["name"][locale], "price_minor": item["price_minor"], "currency": item["currency"], "available": item["available"]} for item in snapshot["menu"]["items"]]
         localized_cart = [{"id": item["id"], "name": item["name_en"] if locale == "en" else item["name_ar"], "quantity": item["quantity"], "available": item["available"]} for item in snapshot["cart"]["items"]]
         displayed_items: list[dict[str, str | int | bool]] | None = None if displayed_menu is None else [{"id": item["id"], "position": item["position"], "name": item["name"][locale], "available": item["available"]} for item in displayed_menu["items"]]
-        history: list[ProviderMessage] = await asyncio.to_thread(read_history, path, token)
-        reply: ModelReply = await ask_provider(text, json.dumps({"displayed_menu": displayed_items, "current_menu": localized_menu, "cart": localized_cart}, ensure_ascii=False), locale, history)
-        suggestion: dict[str, str | int] | None = None
+        history: list[ProviderMessage] = action_context["history"]
+        reply: ModelReply = await ask_provider(text, json.dumps({"displayed_menu": displayed_items, "current_menu": localized_menu, "cart": localized_cart, "completed_actions": action_context["completed_actions"], "quantity_reference": action_context["quantity_reference"]}, ensure_ascii=False), locale, history)
+        suggestion: QuantityProposal | None = None
         if reply.suggestion is not None:
             item = next((item for item in snapshot["menu"]["items"] if item["id"] == reply.suggestion.item_id), None)
             if item is None:
@@ -168,7 +232,8 @@ async def respond(path: Path, token: str, message_id: str, text: str, menu_revis
                 raise ProviderError("The assistant suggested an unavailable item. Please try again.")
             suggestion = {"item_id": item["id"], "quantity": reply.suggestion.quantity}
         result: ChatReply = {"text": reply.text, "suggestion": suggestion, "menu_revision": snapshot["menu"]["revision"], "cart_revision": snapshot["cart"]["revision"], "widget": build_menu_widget(snapshot["menu"], locale) if reply.show_menu else None, "locale": locale}
-        await asyncio.to_thread(finish_turn, path, token, message_id, result)
+        action_sequence: int = action_context["completed_actions"][-1]["sequence"] if action_context["completed_actions"] else 0
+        await asyncio.to_thread(finish_turn, path, token, message_id, result, action_sequence)
         return result
     except (ChatError, ProviderError, MenuViewError):
         await asyncio.to_thread(fail_turn, path, token, message_id)

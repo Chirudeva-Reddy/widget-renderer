@@ -162,6 +162,97 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual((status, replayed), (200, result))
         status, conflict, _ = self.restaurant_request("chat", {**request, "rendered_view_id": None}, cookie, "chat")
         self.assertEqual((status, conflict["code"]), (409, "chat_conflict"))
+        legacy = self.action_context(cookie)
+        self.assertIsNone(legacy["actions_not_seen_in_latest_reply"])
+        self.assertIsNone(legacy["quantity_reference"])
+
+    def action_context(self, cookie: str) -> dict[str, Any]:
+        result = subprocess.run(
+            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import read_action_context; print(json.dumps(read_action_context(Path(sys.argv[1]), sys.argv[2])))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1]],
+            cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True,
+        )
+        return json.loads(result.stdout)
+
+    def test_action_context_records_only_completed_changes_once(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        self.assertEqual(self.action_context(cookie)["completed_actions"], [])
+        first = {"action_id": "first", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}
+        status, cart, _ = self.restaurant_request("cart/quantity", first, cookie, "cart")
+        self.assertEqual(status, 200)
+        status, cart, _ = self.restaurant_request("cart/quantity", {**first, "action_id": "second", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.restaurant_request("cart/quantity", {**first, "action_id": "stale", "quantity": 3}, cookie, "cart")[0], 409)
+        self.assertEqual(self.restaurant_request("cart/quantity", first, cookie, "cart")[0], 200)
+        context = self.action_context(cookie)
+        actions = context["completed_actions"]
+        self.assertEqual([(action["action_id"], action["quantity"]) for action in actions], [("first", 1), ("second", 2)])
+        self.assertEqual(actions[0]["cart_revision_after"], actions[1]["cart_revision_before"])
+        self.assertEqual(actions[-1]["cart_revision_after"], context["snapshot"]["cart"]["revision"])
+        self.assertEqual(context["snapshot"]["cart"]["items"][0]["quantity"], 2)
+        status, _, _ = self.restaurant_request("cart/quantity", {**first, "action_id": "remove", "quantity": 0, "cart_revision": cart["revision"]}, cookie, "cart")
+        self.assertEqual(status, 200)
+        removed = self.action_context(cookie)
+        self.assertEqual(removed["completed_actions"][-1]["quantity"], 0)
+        self.assertEqual(removed["snapshot"]["cart"]["items"], [])
+        _, _, other_cookie = self.restaurant_request("session", {}, "", "session")
+        self.assertEqual(self.action_context(other_cookie)["completed_actions"], [])
+
+    def test_action_context_keeps_one_immutable_confirmation(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        status, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "add", "item_id": "falafel", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")
+        self.assertEqual(status, 200)
+        requests = [{"action_id": action_id, "cart_revision": cart["revision"]} for action_id in ("confirm-one", "confirm-two")]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda payload: self.restaurant_request("orders/confirm", payload, cookie, "confirm"), requests))
+        self.assertEqual(sorted(result[0] for result in results), [200, 409])
+        winner: int = next(index for index, result in enumerate(results) if result[0] == 200)
+        self.assertEqual(self.restaurant_request("orders/confirm", requests[winner], cookie, "confirm")[1], results[winner][1])
+        context = self.action_context(cookie)
+        self.assertEqual([action["type"] for action in context["completed_actions"]], ["cart.set_quantity", "order.confirm"])
+        self.assertEqual(context["completed_actions"][-1]["order"], results[winner][1])
+        self.assertEqual(context["completed_actions"][-1]["cart_revision_after"], context["snapshot"]["cart"]["revision"])
+        self.assertEqual(context["snapshot"]["cart"]["items"], [])
+        self.assertIsNone(context["quantity_reference"])
+        _, _, other_cookie = self.restaurant_request("session", {}, "", "session")
+        self.assertEqual(self.action_context(other_cookie)["completed_actions"], [])
+
+    def test_action_context_preserves_what_a_prior_reply_knew(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        status, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "first", "item_id": "falafel", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")
+        self.assertEqual(status, 200)
+        before = self.action_context(cookie)
+        sequence: int = before["completed_actions"][-1]["sequence"]
+        reply = {"text": "Proposed hummus", "suggestion": {"item_id": "hummus", "quantity": 1}, "menu_revision": before["snapshot"]["menu"]["revision"], "cart_revision": cart["revision"], "widget": None, "locale": "en"}
+        result = subprocess.run(
+            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import begin_turn, finish_turn, read_history; path = Path(sys.argv[1]); token = sys.argv[2]; reply = json.loads(sys.argv[3]); begin_turn(path, token, 'proposal', 'Add hummus', reply['menu_revision'], 'en', None); finish_turn(path, token, 'proposal', reply, int(sys.argv[4])); print(json.dumps(read_history(path, token)))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reply), str(sequence)],
+            cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True,
+        )
+        history = json.loads(result.stdout)
+        historical_reply = json.loads(history[-1]["content"])
+        self.assertEqual(historical_reply["reply"], reply)
+        self.assertEqual(historical_reply["completed_actions_through_sequence"], sequence)
+        after_reply = self.action_context(cookie)
+        self.assertEqual(len(after_reply["completed_actions"]), 1)
+        self.assertEqual(after_reply["actions_not_seen_in_latest_reply"], [])
+        self.assertEqual(after_reply["latest_assistant_proposal"], reply["suggestion"])
+        self.assertEqual(after_reply["quantity_reference"], {"item_id": "hummus", "quantity": 1, "source": "assistant_proposal"})
+        status, _, _ = self.restaurant_request("cart/quantity", {"action_id": "newer", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        self.assertEqual(status, 200)
+        newer = self.action_context(cookie)
+        self.assertGreater(newer["completed_actions"][-1]["sequence"], sequence)
+        self.assertEqual([action["action_id"] for action in newer["actions_not_seen_in_latest_reply"]], ["newer"])
+        self.assertEqual(newer["quantity_reference"], {"item_id": "hummus", "quantity": 1, "source": "completed_action"})
+
+    def test_action_context_is_bounded_and_chronological(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        for quantity in range(1, 23):
+            status, cart, _ = self.restaurant_request("cart/quantity", {"action_id": f"set-{quantity}", "item_id": "hummus", "quantity": quantity, "cart_revision": cart["revision"]}, cookie, "cart")
+            self.assertEqual(status, 200)
+        context = self.action_context(cookie)
+        actions = context["completed_actions"]
+        self.assertEqual([action["quantity"] for action in actions], list(range(3, 23)))
+        self.assertEqual([action["sequence"] for action in actions], sorted(action["sequence"] for action in actions))
+        self.assertEqual(actions[-1]["cart_revision_after"], context["snapshot"]["cart"]["revision"])
 
     def test_valid_card_and_nested_list_render_plans(self) -> None:
         for source, expected_kind in [

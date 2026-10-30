@@ -4,7 +4,7 @@ import secrets
 import sqlite3
 import time
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 
 class CartItem(TypedDict):
@@ -37,6 +37,9 @@ def initialize_cart(path: Path) -> None:
         connection.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)")
         connection.execute("CREATE TABLE IF NOT EXISTS cart_items (session_hash TEXT NOT NULL, item_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 99), PRIMARY KEY (session_hash, item_id), FOREIGN KEY (session_hash) REFERENCES sessions(token_hash), FOREIGN KEY (item_id) REFERENCES menu_items(id))")
         connection.execute("CREATE TABLE IF NOT EXISTS cart_actions (session_hash TEXT NOT NULL, action_id TEXT NOT NULL, item_id TEXT NOT NULL, quantity INTEGER NOT NULL, result_json TEXT NOT NULL, cart_revision TEXT NOT NULL, PRIMARY KEY (session_hash, action_id))")
+
+        # shortcut: earlier actions lack a shared chronology; backfill only with reliable ordering.
+        connection.execute("CREATE TABLE IF NOT EXISTS completed_actions (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_hash TEXT NOT NULL, action_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('cart.set_quantity', 'order.confirm')), resulting_cart_revision TEXT NOT NULL, UNIQUE(session_hash, action_id))")
 
         columns: set[str] = {row[1] for row in connection.execute("PRAGMA table_info(cart_actions)").fetchall()}
         if "cart_revision" not in columns:
@@ -102,6 +105,7 @@ def set_quantity(path: Path, token: str, action_id: str, item_id: str, quantity:
             connection.execute("INSERT INTO cart_items (session_hash, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(session_hash, item_id) DO UPDATE SET quantity = excluded.quantity", (session_hash, item_id, quantity))
         result: Cart = read_cart(connection, session_hash)
         connection.execute("INSERT INTO cart_actions (session_hash, action_id, item_id, quantity, result_json, cart_revision) VALUES (?, ?, ?, ?, ?, ?)", (session_hash, action_id, item_id, quantity, json.dumps(result, ensure_ascii=False), cart_revision))
+        record_completed_action(connection, session_hash, action_id, "cart.set_quantity", result["revision"])
         return result
 
 
@@ -111,6 +115,52 @@ class Order(TypedDict):
     items: list[CartItem]
     total_minor: int
     currency: str
+
+
+class CompletedQuantityAction(TypedDict):
+    sequence: int
+    action_id: str
+    type: Literal["cart.set_quantity"]
+    item_id: str
+    quantity: int
+    cart_revision_before: str
+    cart_revision_after: str
+
+
+class CompletedConfirmationAction(TypedDict):
+    sequence: int
+    action_id: str
+    type: Literal["order.confirm"]
+    order: Order
+    cart_revision_before: str
+    cart_revision_after: str
+
+
+CompletedAction = CompletedQuantityAction | CompletedConfirmationAction
+
+
+def record_completed_action(connection: sqlite3.Connection, session_hash: str, action_id: str, kind: Literal["cart.set_quantity", "order.confirm"], resulting_cart_revision: str) -> None:
+    connection.execute("INSERT INTO completed_actions (session_hash, action_id, kind, resulting_cart_revision) VALUES (?, ?, ?, ?)", (session_hash, action_id, kind, resulting_cart_revision))
+
+
+def read_completed_actions(connection: sqlite3.Connection, session_hash: str) -> list[CompletedAction]:
+    """Load the latest 20 committed action results for this session, oldest first."""
+    rows: list[tuple[int, str, str, str]] = connection.execute("SELECT sequence, action_id, kind, resulting_cart_revision FROM completed_actions WHERE session_hash = ? ORDER BY sequence DESC LIMIT 20", (session_hash,)).fetchall()
+    actions: list[CompletedAction] = []
+    for sequence, action_id, kind, revision_after in reversed(rows):
+        if kind == "cart.set_quantity":
+            quantity_row: tuple[str, int, str] | None = connection.execute("SELECT item_id, quantity, cart_revision FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
+            if quantity_row is None:
+                raise RuntimeError(f"Completed cart action {action_id} has no stored result.")
+            actions.append({"sequence": sequence, "action_id": action_id, "type": "cart.set_quantity", "item_id": quantity_row[0], "quantity": quantity_row[1], "cart_revision_before": quantity_row[2], "cart_revision_after": revision_after})
+        elif kind == "order.confirm":
+            order_row: tuple[str, str] | None = connection.execute("SELECT result_json, cart_revision FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
+            if order_row is None:
+                raise RuntimeError(f"Completed confirmation {action_id} has no stored result.")
+            actions.append({"sequence": sequence, "action_id": action_id, "type": "order.confirm", "order": cast(Order, json.loads(order_row[0])), "cart_revision_before": order_row[1], "cart_revision_after": revision_after})
+        else:
+            raise RuntimeError(f"Completed action {action_id} has unsupported type {kind}.")
+    return actions
 
 
 def initialize_orders(path: Path) -> None:
@@ -145,4 +195,6 @@ def confirm_order(path: Path, token: str, action_id: str, cart_revision: str) ->
         connection.execute("INSERT INTO orders (id, session_hash, result_json, created_at) VALUES (?, ?, ?, ?)", (order["order_id"], session_hash, result_json, int(time.time())))
         connection.execute("INSERT INTO order_actions (session_hash, action_id, order_id, cart_revision, result_json) VALUES (?, ?, ?, ?, ?)", (session_hash, action_id, order["order_id"], cart_revision, result_json))
         connection.execute("DELETE FROM cart_items WHERE session_hash = ?", (session_hash,))
+        empty_cart: Cart = read_cart(connection, session_hash)
+        record_completed_action(connection, session_hash, action_id, "order.confirm", empty_cart["revision"])
         return order
