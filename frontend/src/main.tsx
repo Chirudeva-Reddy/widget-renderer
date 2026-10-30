@@ -41,7 +41,7 @@ function PreviewNode({ node }: { node: Node }): ReactElement {
     return row.header ? <th key={cellIndex} scope="col" className={cell.align ? `align-${cell.align}` : undefined}>{content}</th> : <td key={cellIndex} className={cell.align ? `align-${cell.align}` : undefined}>{content}</td>;
   })}</tr>)}</tbody></table></div>;
   if (node.kind === "problem") return <p className="problem">{node.message}</p>;
-  return <div className={`widget-${node.kind}${node.gap !== undefined ? ` gap-${node.gap}` : ""}`}>
+  return <div className={[`widget-${node.kind}`, node.gap === undefined ? "" : `gap-${node.gap}`, node.direction ? `direction-${node.direction}` : "", node.align ? `layout-align-${node.align}` : "", node.justify ? `layout-justify-${node.justify}` : "", node.padding === undefined ? "" : `padding-${node.padding}`, node.flex === undefined ? "" : `flex-${node.flex}`].filter(Boolean).join(" ")}>
     {node.children.length === 0 ? <p className="empty-card">This {node.kind === "list" ? "list" : "container"} is empty.</p>
       : node.children.map((child, index) => <PreviewNode key={nodeKey(child, index, node.children)} node={child} />)}
   </div>;

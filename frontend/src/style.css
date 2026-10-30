@@ -63,7 +63,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; color: #a0a69
 .checkout-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-block-start: 1rem; }
 
 .widget-spacer { flex: 1; }
-.widget-box { display: grid; place-items: center; flex: 0 0 42px; min-height: 42px; border-radius: 12px; background: #e2e9dc; }
+.widget-box { display: flex; flex-direction: column; min-width: 0; }
+.ordering-item .widget-box { display: grid; place-items: center; flex: 0 0 42px; min-height: 42px; border-radius: 12px; background: #e2e9dc; }
 .ordering-menu { background: #f5f7f2; border-radius: 16px; padding: 16px; }
 .ordering-header { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: #e5ecdf; border-radius: 12px; }
 .ordering-header span { font-size: 12px; color: #53634c; }
@@ -88,3 +89,27 @@ footer { display: flex; justify-content: space-between; gap: 12px; color: #a0a69
 .checkout-total { display: flex; justify-content: space-between; gap: 12px; padding: 16px 0; }
 .checkout-actions button { flex: 1 1 130px; }
 @media (max-width: 480px) { .checkout-card { padding: 12px; } .checkout-line-main { flex-wrap: wrap; } }
+
+.direction-row { flex-direction: row; }.direction-col { flex-direction: column; }
+.padding-0 { padding: 0px; } .flex-0 { flex: 0; }
+.padding-1 { padding: 4px; } .flex-1 { flex: 1; }
+.padding-2 { padding: 8px; } .flex-2 { flex: 2; }
+.padding-3 { padding: 12px; } .flex-3 { flex: 3; }
+.padding-4 { padding: 16px; } .flex-4 { flex: 4; }
+.padding-5 { padding: 20px; } .flex-5 { flex: 5; }
+.padding-6 { padding: 24px; } .flex-6 { flex: 6; }
+.padding-7 { padding: 28px; } .flex-7 { flex: 7; }
+.padding-8 { padding: 32px; } .flex-8 { flex: 8; }
+
+.layout-align-start { align-items: flex-start; }
+.layout-align-end { align-items: flex-end; }
+.layout-align-center { align-items: center; }
+.layout-align-baseline { align-items: baseline; }
+.layout-align-stretch { align-items: stretch; }
+.layout-justify-start { justify-content: flex-start; }
+.layout-justify-end { justify-content: flex-end; }
+.layout-justify-center { justify-content: center; }
+.layout-justify-between { justify-content: space-between; }
+.layout-justify-around { justify-content: space-around; }
+.layout-justify-evenly { justify-content: space-evenly; }
+.layout-justify-stretch { justify-content: stretch; }

@@ -17,7 +17,7 @@ export type ControlNode =
 export type ChartNode = { kind: "chart"; points: { label: string; values: number[] }[]; series: { type: "bar" | "line"; label: string; color?: "blue" | "purple" | "orange" | "green" | "red" | "yellow" | "pink" }[]; show_y_axis: boolean; show_legend: boolean };
 export type TableRow = { header: boolean; cells: TableCell[] };
 export type TableCell = { children: Node[]; align?: "start" | "center" | "end" };
-export type Container = { kind: "card" | "list" | "list_item" | "row" | "col" | "form" | "box"; children: Node[]; gap?: number; key?: string };
+export type Container = { kind: "card" | "list" | "list_item" | "row" | "col" | "form" | "box"; children: Node[]; gap?: number; key?: string; direction?: "row" | "col"; align?: "start" | "center" | "end" | "baseline" | "stretch"; justify?: "start" | "center" | "end" | "between" | "around" | "evenly" | "stretch"; padding?: number; flex?: number };
 const nodeSchema: z.ZodType<Node> = z.lazy(() => z.discriminatedUnion("kind", [
   z.object({ kind: z.enum(["text", "title", "caption"]), value: z.string(), weight: z.enum(["normal", "medium", "semibold", "bold"]).optional() }).strict(),
   z.object({ kind: z.literal("button"), label: z.string().max(256) }).strict(),
@@ -31,7 +31,7 @@ const nodeSchema: z.ZodType<Node> = z.lazy(() => z.discriminatedUnion("kind", [
     header: z.boolean(), cells: z.array(z.object({ children: z.array(nodeSchema).max(100), align: z.enum(["start", "center", "end"]).optional() }).strict()).max(20),
   }).strict()).max(100) }).strict(),
   z.object({ kind: z.literal("problem"), message: z.string() }).strict(),
-  z.object({ kind: z.enum(["card", "list", "list_item", "row", "col", "form", "box"]), children: z.array(nodeSchema).max(100), gap: z.number().int().min(0).max(8).optional(), key: z.string().max(128).optional() }).strict(),
+  z.object({ kind: z.enum(["card", "list", "list_item", "row", "col", "form", "box"]), children: z.array(nodeSchema).max(100), gap: z.number().int().min(0).max(8).optional(), key: z.string().max(128).optional(), direction: z.enum(["row", "col"]).optional(), align: z.enum(["start", "center", "end", "baseline", "stretch"]).optional(), justify: z.enum(["start", "center", "end", "between", "around", "evenly", "stretch"]).optional(), padding: z.number().int().min(0).max(8).optional(), flex: z.number().int().min(0).max(8).optional() }).strict(),
 ]));
 const cardSchema: z.ZodType<Container> = z.object({
   kind: z.enum(["card", "list"]), children: z.array(nodeSchema).max(100), key: z.string().max(128).optional(),

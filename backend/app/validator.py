@@ -41,6 +41,11 @@ class ContainerNode(TypedDict):
     children: list["Node"]
     gap: NotRequired[int]
     key: NotRequired[str]
+    direction: NotRequired[Literal["row", "col"]]
+    align: NotRequired[Literal["start", "center", "end", "baseline", "stretch"]]
+    justify: NotRequired[Literal["start", "center", "end", "between", "around", "evenly", "stretch"]]
+    padding: NotRequired[int]
+    flex: NotRequired[int]
 
 
 class TableCell(TypedDict):
@@ -167,8 +172,15 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
     issues: list[Issue] = []
     nodes: list[Node] = []
     seen_keys: set[str] = set()
+    supported: set[str] = {"type", "children", "key"}
+    if component in ("Row", "Col", "Box"):
+        supported |= {"gap", "padding", "flex", "align", "justify"}
+    if component == "Box":
+        supported.add("direction")
+    if component == "ListViewItem":
+        supported.add("gap")
     for prop in data:
-        if prop not in ({"type", "children", "key", "gap"} if component in ("Row", "Col", "ListViewItem") else {"type", "children", "key"}):
+        if prop not in supported:
             issues.append(issue("unsupported_property", f"{path}.{prop}", "warning", "Property is not supported."))
     key: object = data.get("key")
     if isinstance(key, str) and len(key) > 128:
@@ -279,12 +291,33 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
     container: ContainerNode = {"kind": kinds[component], "children": nodes}
     if isinstance(key, str):
         container["key"] = key
-    if component in ("Row", "Col", "ListViewItem") and "gap" in data:
+    if component in ("Row", "Col", "Box", "ListViewItem") and "gap" in data:
         gap: object = data["gap"]
         if isinstance(gap, int) and not isinstance(gap, bool) and 0 <= gap <= 8:
             container["gap"] = gap
         else:
             issues.append(issue("invalid_property", f"{path}.gap", "warning", "Gap must be an integer from 0 to 8."))
+    if component in ("Row", "Col", "Box"):
+        for prop in ("padding", "flex"):
+            if prop in data:
+                value: object = data[prop]
+                if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 8:
+                    container[prop] = value
+                else:
+                    issues.append(issue("invalid_property", f"{path}.{prop}", "warning", f"{prop} must be an integer from 0 to 8."))
+        for prop, values in (("align", ("start", "center", "end", "baseline", "stretch")), ("justify", ("start", "center", "end", "between", "around", "evenly", "stretch"))):
+            if prop in data:
+                value = data[prop]
+                if isinstance(value, str) and value in values:
+                    container[prop] = value
+                else:
+                    issues.append(issue("invalid_property", f"{path}.{prop}", "warning", f"{prop} is not supported."))
+    if component == "Box" and "direction" in data:
+        direction: object = data["direction"]
+        if direction in ("row", "col"):
+            container["direction"] = direction
+        else:
+            issues.append(issue("invalid_property", f"{path}.direction", "warning", "Direction must be row or col."))
     return container, issues
 
 

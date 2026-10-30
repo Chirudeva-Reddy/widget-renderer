@@ -31,6 +31,16 @@ class ControlApiTests(unittest.TestCase):
         self.assertNotIn("onClickAction", node["children"][2])
         self.assertEqual(result["issues"][0]["code"], "unsupported_property")
 
+    def test_bounded_layout_properties_and_invalid_values(self) -> None:
+        layout = {"type": "Box", "direction": "row", "align": "center", "justify": "between", "gap": 2, "padding": 3, "flex": 1, "children": [{"type": "Text", "value": "Dish"}, {"type": "Spacer"}]}
+        result = self.validate(layout)
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual({key: result["preview"]["children"][1][key] for key in ("direction", "align", "justify", "gap", "padding", "flex")}, {key: layout[key] for key in ("direction", "align", "justify", "gap", "padding", "flex")})
+        invalid = self.validate({**layout, "padding": -1, "flex": True, "align": "unsafe", "direction": "reverse"})
+        self.assertEqual(invalid["status"], "partial")
+        self.assertEqual({entry["path"] for entry in invalid["issues"]}, {"$.children[1].padding", "$.children[1].flex", "$.children[1].align", "$.children[1].direction"})
+        self.assertEqual(invalid["preview"]["children"][1]["children"][0]["value"], "Dish")
+
     def test_layout_key_survives_validation(self) -> None:
         result = self.validate({"type": "Form", "key": "order", "children": [{"type": "Input", "name": "quantity", "inputType": "number"}]})
         self.assertEqual(result["status"], "valid")
