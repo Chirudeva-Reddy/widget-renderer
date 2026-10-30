@@ -225,7 +225,36 @@ The state is the editor's saved copy, so the subtotal differs from `defaultState
 }
 ```
 
-> ⚠️ **RTL decision needed.** Our `*-ar.widget.json` examples mirror *manually*. They reorder children with `lang === "ar"` branches (title after the Spacer, total before its label, the Badge at the end) and set `justify="end"`. If our renderer also applies `dir="rtl"`, those AR payloads will flip **twice** and come out LTR. Pick one approach: either (a) the renderer owns mirroring (`dir="rtl"` plus logical start/end, and the agent sends the same child order for both languages), or (b) the payload owns it and the renderer stays LTR. (a) is the cleaner contract, because the model can't get it wrong. `textAlign` and `align` values are already logical (`start`/`end`).
+### 4c. Arabic: the renderer owns mirroring (decided; also SPEC.md §RTL and review finding 18)
+
+The renderer mirrors through `dir="rtl"` and logical CSS. **A payload uses one child order for both languages**: the order in 4a/4b. An Arabic payload is the same tree with Arabic strings, so the agent never reverses children.
+
+The supplied templates mirror by hand. All four files share one `view`, and its `lang === "ar"` branches reorder children: the title after the Spacer, the total before its label, the Badge last, and `justify="end"`. Do not copy those branches. Under `dir="rtl"` they would flip twice and come out left to right. Only the template's `defaultState` strings (labels, dish names, notice) carry over. The originals in `03-widget-renderer/widget-example/` are left unchanged as source material.
+
+Arabic confirmation header and line, in canonical order (compare 4b):
+
+```json
+{ "type": "Card", "size": "md", "children": [
+  { "type": "Row", "align": "center", "children": [
+    { "type": "Title", "value": "تأكيد الطلب", "size": "md" },
+    { "type": "Spacer" },
+    { "type": "Caption", "value": "ORD-1042" }
+  ]},
+  { "type": "Text", "value": "نفدت التبولة وأُزيلت من طلبك.", "size": "sm", "color": "danger", "textAlign": "start" },
+  { "type": "Row", "key": "shawarma", "gap": 2, "align": "center", "children": [
+    { "type": "Badge", "label": "1×", "variant": "outline" },
+    { "type": "Text", "value": "شاورما دجاج", "size": "sm" },
+    { "type": "Spacer" },
+    { "type": "Text", "value": "$8.50", "size": "sm" }
+  ]}
+]}
+```
+
+Renderer rules that follow:
+- `textAlign`, `align` and `justify` already use logical values (`start`/`end`), so they flip with `dir` without any changes.
+- Wrap each text value in bidi isolation (`<bdi>` or `unicode-bidi: isolate`). That keeps `$8.50`, `ORD-1042`, `1×` and English dish names inside Arabic text readable.
+- Charts don't mirror (SPEC.md line 66). Render the plot area with `dir="ltr"` and translate only the labels.
+- The locale toggle keeps `[EN, عربي]` in one order and marks the active button with `variant: "solid"`.
 
 ---
 
@@ -455,5 +484,5 @@ Note that **"No" sends `enable: true`**. This bug is in OpenAI's own example. A 
 4. **Coercion:** numbers arrive as strings (`"label": "1"`, `"value": "28"`). Expect the reverse from the model too, e.g. `value: 8.5`. Coerce primitives to strings for text props.
 5. **`key` is the identity for updates.** Match old and new trees on `key` (ListViewItem, Row) and on `name` (form controls) so local state survives a replacement: an open Select, typed input, a "show more" toggle.
 6. **Sanitise CSS strings** in `background` and `color`. The gallery passes `url(...)` and gradients, so allowlist tokens, hex, `rgb()` and `linear-gradient` and reject everything else.
-7. **Charts:** `xAxis.labels` maps raw values to display text. Each `series.dataKey` must exist in the data rows, and numeric values must be finite. Decide whether charts mirror in RTL; the usual choice is not to (time still runs left to right).
+7. **Charts:** `xAxis.labels` maps raw values to display text. Each `series.dataKey` must exist in the data rows, and numeric values must be finite. Charts don't mirror in RTL (§4c).
 8. **Actions:** only dispatch `ActionConfig` objects with a string `type`. Honour `loadingBehavior` to block double sends.

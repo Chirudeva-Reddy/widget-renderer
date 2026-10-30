@@ -6,7 +6,7 @@ Last checked: 30 October 2026. This is a test catalogue for the assessment rende
 
 Test the **compiled JSON component tree** pasted into the playground, not a Studio `.widget` authoring template containing `view` and state/schema. The brief requires Card, ListView, text, table and a bar or line chart, graceful handling of unknown types, and useful output even when model-generated input is broken. The [ChatKit widget guide](https://developers.openai.com/api/docs/guides/chatkit-widgets) describes components and their props; the [Python SDK widget reference](https://openai.github.io/chatkit-python/api/chatkit/widgets/) and [JavaScript WidgetsOption reference](https://openai.github.io/chatkit-js/api/openai/chatkit/type-aliases/widgetsoption/) also identify `Basic` as a root. `Basic` is outside the stated minimum, not inherently invalid ChatKit. Consult the [actions guide](https://developers.openai.com/api/docs/guides/chatkit-actions) and [SDK action concepts](https://openai.github.io/chatkit-python/concepts/actions/) for action routing and validation. [Studio](https://widgets.chatkit.studio/) provides a component reference and authoring tool; local `chatkit-components.d.ts` captures a reference snapshot. Documentation may evolve; check the version used for the submission.
 
-The current playground supports only a Card with direct Text children. Its validator was called directly for cases B01–B09, C01, C03 and S01 below; recorded results are actual backend return values, **not observed browser renderings**. Visible outcomes below are expectations from the project failure policy and frontend code, pending browser verification. Other cases are proposed and unexecuted. `valid`, `partial`, `invalid`, issue codes and limits are this project's contract, not promises made by ChatKit.
+At the time of the original catalogue, the playground supported only a Card with direct Text children. Its validator was called directly for cases B01–B09, C01, C03 and S01 below; recorded results are actual backend return values, **not observed browser renderings**. Visible outcomes below are expectations from the project failure policy and frontend code, pending browser verification. Other cases are proposed and unexecuted. `valid`, `partial`, `invalid`, issue codes and limits are this project's contract, not promises made by ChatKit.
 
 ## How to run and record
 
@@ -17,13 +17,13 @@ The current playground supports only a Card with direct Text children. Its valid
 
 ## Baseline and broken payloads
 
-Each JSON block is the entire widget source, except the intentionally malformed B01. The current results are direct `validate_source` observations; they do not establish HTTP, layout, or interaction behavior.
+Each JSON block is the entire widget source, except the intentionally malformed B01. The original results are direct `validate_source` observations; they do not establish HTTP, layout, or interaction behavior.
 
-| ID | Source | Expected visible outcome / acceptance | Current validator observation |
+| ID | Source | Expected visible outcome / acceptance | Original validator observation |
 |---|---|---|---|
 | C01 | `{"type":"Card","children":[]}` | Empty Card with an explicit empty message; valid. | `valid`, empty card preview. |
 | C02 | `{"type":"Card","children":[{"type":"Text","value":"Hello"}]}` | Card displays Hello, no diagnostics. | Not separately executed; baseline expected. |
-| C03 | `{"type":"ListView","children":[]}` | Valid list root; empty list presented safely. | `invalid`, `invalid_root`; valid ChatKit root not yet supported. |
+| C03 | `{"type":"ListView","children":[]}` | Valid list root; empty list presented safely. | `invalid`, `invalid_root`; historical result; ListView is now supported. |
 | B01 | `{"type":"Card","children":[` | Reject malformed source, report problem; retain prior preview as outdated if one exists. | `invalid`, `invalid_json`, null preview. |
 | B02 | `[]` | Reject non-object root; report root error. | `invalid`, `invalid_root`, null preview. |
 | B03 | `{"type":"Card"}` | Reject root without required children. | `invalid`, `invalid_root`, null preview. |
@@ -46,7 +46,7 @@ Additional copyable cases, all **not executed**:
 | B14 | `{"type":"Card","children":[{"type":"Text","value":NaN}]}` | Reject nonstandard JSON constant; no silent repair. |
 | B15 | `{"type":"Card","children":[{"type":"Text","value":"\ud800"}]}` (six literal escape characters in source) | HTTP 422 `invalid_unicode`, safe notice and no server error. Also test a literal unpaired surrogate sent through a client capable of producing it. |
 | B16 | `{"type":"Basic","children":[]}` | Valid SDK root but outside current required subset: explicit unsupported-root behavior, no crash; do not describe as universally invalid. |
-| B17 | `{"type":"Card","children":[{"type":"Text","value":"A","weight":"semibold"}]}` | Once display props are supported, valid text renders with semibold weight without warning. Currently the property is outside the implemented subset. |
+| B17 | `{"type":"Card","children":[{"type":"Text","value":"A","weight":"semibold"}]}` | Once display props are supported, valid text renders with semibold weight without warning. This property is now supported. |
 
 ## Components and interactions to implement and verify
 
@@ -93,3 +93,11 @@ The following bounds are project targets, not ChatKit-wide limits. Generate boun
 ## Execution record
 
 On 30 October 2026, the backend's `validate_source` function was invoked directly for C01, C03, B01–B09 and S01, using the inputs shown. The values in the table are the returned status, issue code/path and preview structure. C02 and all subsequent coverage are unexecuted. No API request, browser rendering, console, action, accessibility, or full-suite result is implied by these observations.
+
+## Initial automated and browser checks — 30 October 2026
+
+The implementation now supports Card, ListView, ListViewItem, Row, Col, Text, Title, Caption, Badge and Divider in its current subset. The earlier table records a previous implementation snapshot; in particular C03 is now supported. Table, Chart and widget actions are still future coverage.
+
+Run the isolated HTTP integration checks with `cd backend && .venv/bin/python -m unittest discover -s tests -v`. The tests start a local server with a temporary database and cover valid Card and nested ListView, malformed sources and roots, unknown children, duplicate keys, omitted executable properties, request envelopes, Unicode and body/source limits. Eight tests passed on 30 October 2026.
+
+A browser check of the existing local app displayed the welcome Card as VALID, then showed Before, an in-place problem placeholder, and After as PARTIAL with the correct diagnostic path. Submitting malformed JSON after that retained the partial preview and displayed INVALID with an out-of-date notice. This is a manual observation, not an automated browser regression test; other browser cases and console inspection remain unverified.
