@@ -1,7 +1,7 @@
 import type { FormEvent, ReactElement } from "react";
 import type { Card, Cart, Menu, Node } from "./api";
 
-export type QuantityEdit = { value: string; cartRevision: string; actionId: string };
+export type QuantityEdit = { value: string; cartRevision: string; actionId: string; retryable?: boolean };
 export type CartChange = { itemId: string; quantity: number; cartRevision: string; actionId: string };
 type QuantityEditorProps = {
   item: Menu["items"][number]; cart: Cart; locale: "en" | "ar"; disabled: boolean;
@@ -21,6 +21,7 @@ function QuantityEditor({ item, cart, locale, disabled, edit, setEdit, onChange 
     setEdit(next);
     const success: boolean = await onChange({ itemId: item.id, quantity: Number(next.value), cartRevision: next.cartRevision, actionId: next.actionId });
     if (success) setEdit(null);
+    else setEdit({ ...next, retryable: true });
   }
 
   function submit(event: FormEvent<HTMLFormElement>): void {
@@ -40,6 +41,7 @@ function QuantityEditor({ item, cart, locale, disabled, edit, setEdit, onChange 
     <button type="button" disabled={disabled || stale || quantity === 0} onClick={() => { void save({ value: "0", cartRevision: cart.revision, actionId: crypto.randomUUID() }); }}>{arabic ? "إزالة" : "Remove"}</button>
     {!item.available && <p className="notice">{arabic ? "نفد هذا الصنف. يمكنك تقليل الكمية أو إزالته." : "Sold out. You can reduce the quantity or remove this item."}</p>}
     {!valid && <p className="notice" role="alert">{arabic ? `أدخل كمية صحيحة من 0 إلى ${maximum}.` : `Enter a whole quantity from 0 to ${maximum}.`}</p>}
+    {edit?.retryable && <button type="button" disabled={disabled} onClick={() => { void save(edit); }}>{arabic ? "إعادة محاولة التحديث" : "Retry update"}</button>}
     {stale && <div className="notice"><p>{arabic ? `تغيرت السلة. الكمية الحالية: ${quantity}. راجعها قبل تطبيق القيمة المدخلة.` : `Your cart changed. Current quantity: ${quantity}. Review it before applying your entered value.`}</p><button type="button" disabled={disabled} onClick={() => setEdit({ value, cartRevision: cart.revision, actionId: crypto.randomUUID() })}>{arabic ? "مراجعة أحدث سلة" : "Review latest cart"}</button></div>}
   </form>;
 }
