@@ -25,6 +25,7 @@ class QuantityBinding(TypedDict):
 class MenuActions(TypedDict):
     quantities: list[QuantityBinding]
     checkout: bool
+    locales: list[Literal["en", "ar"]]
 
 
 class WidgetEnvelope(TypedDict):
@@ -44,6 +45,7 @@ def initialize_widgets(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE IF NOT EXISTS widgets (id TEXT PRIMARY KEY, session_hash TEXT NOT NULL, locale TEXT NOT NULL, UNIQUE(session_hash, locale))")
         connection.execute("CREATE TABLE IF NOT EXISTS widget_revisions (widget_id TEXT NOT NULL, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, envelope_json TEXT NOT NULL, PRIMARY KEY(widget_id, revision))")
+        connection.execute("CREATE TABLE IF NOT EXISTS session_preferences (session_hash TEXT PRIMARY KEY, locale TEXT NOT NULL CHECK(locale IN ('en', 'ar')))")
         connection.execute("CREATE TABLE IF NOT EXISTS session_snapshots (session_hash TEXT PRIMARY KEY, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL)")
         connection.execute("CREATE TABLE IF NOT EXISTS widget_acknowledgements (widget_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
 
@@ -55,7 +57,7 @@ def issue_widget(connection: sqlite3.Connection, session_hash: str, locale: Lite
     if row is None:
         connection.execute("INSERT INTO widgets (id, session_hash, locale) VALUES (?, ?, ?)", (widget_id, session_hash, locale))
     cart_revision: str = cart["revision"]
-    actions: MenuActions = {"quantities": [{"item_id": item["id"], "position": item["position"], "minimum": 0, "maximum": 99 if item["available"] else next((entry["quantity"] for entry in cart["items"] if entry["id"] == item["id"]), 0)} for item in menu["items"]], "checkout": bool(cart["items"])}
+    actions: MenuActions = {"quantities": [{"item_id": item["id"], "position": item["position"], "minimum": 0, "maximum": 99 if item["available"] else next((entry["quantity"] for entry in cart["items"] if entry["id"] == item["id"]), 0)} for item in menu["items"]], "checkout": bool(cart["items"]), "locales": ["en", "ar"]}
     fingerprint: str = hashlib.sha256(json.dumps({"actions": actions, "payload": payload, "menu_view_id": view_id, "cart_revision": cart_revision, "menu": menu, "cart": cart}, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     latest: tuple[int, str, str] | None = connection.execute("SELECT revision, fingerprint, envelope_json FROM widget_revisions WHERE widget_id = ? ORDER BY revision DESC LIMIT 1", (widget_id,)).fetchone()
     if latest is not None and latest[1] == fingerprint:

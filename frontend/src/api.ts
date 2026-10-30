@@ -146,13 +146,23 @@ const orderSchema = z.object({
 export type Order = z.infer<typeof orderSchema>;
 export class ConfirmationConflict extends Error {}
 
-const checkoutViewSchema = z.object({ kind: z.literal("widget"), role: z.literal("confirmation"), actions: z.array(z.object({ type: z.enum(["order.confirm", "order.edit"]), enabled: z.boolean() }).strict()).length(2), payload: z.object({ en: cardSchema, ar: cardSchema }).strict(), cart_revision: z.string().regex(/^[a-f0-9]{64}$/), widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), cart: cartSchema }).strict().refine((view) => view.cart_revision === view.cart.revision);
+const checkoutViewSchema = z.object({ kind: z.literal("widget"), role: z.literal("confirmation"), sequence: z.number().int().positive(), actions: z.array(z.object({ type: z.enum(["order.confirm", "order.edit"]), enabled: z.boolean() }).strict()).length(2), payload: z.object({ en: cardSchema, ar: cardSchema }).strict(), cart_revision: z.string().regex(/^[a-f0-9]{64}$/), widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), cart: cartSchema }).strict().refine((view) => view.cart_revision === view.cart.revision);
 export type CheckoutView = z.infer<typeof checkoutViewSchema>;
 export async function startWidgetCheckout(widgetId: string, revision: number, actionId: string, cartRevision: string): Promise<CheckoutView> {
   const response: Response = await fetch("/api/actions", { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-action" }, body: JSON.stringify({ widget_id: widgetId, revision, action_id: actionId, type: "checkout.start", payload: { cart_revision: cartRevision } }) });
   const payload: unknown = await response.json();
   if (!response.ok) { const error = z.object({ message: z.string() }).safeParse(payload); throw new Error(error.success ? error.data.message : `Checkout failed (${response.status}).`); }
   return checkoutViewSchema.parse(payload);
+}
+
+export async function setWidgetLocale(widget: WidgetEnvelope, actionId: string, locale: "en" | "ar"): Promise<void> {
+  const response: Response = await fetch("/api/actions", { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-action" }, body: JSON.stringify({ widget_id: widget.widget_id, revision: widget.revision, action_id: actionId, type: "locale.set", payload: { lang: locale } }) });
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    const error = z.object({ code: z.string(), message: z.string() }).parse(payload);
+    throw new Error(`${error.message} (${error.code}).`);
+  }
+  z.object({ locale: z.enum(["en", "ar"]) }).strict().parse(payload);
 }
 
 export async function editWidgetOrder(widgetId: string, revision: number, actionId: string, cartRevision: string): Promise<void> {
@@ -185,7 +195,7 @@ export async function confirmOrder(actionId: string, cartRevision: string): Prom
   return orderSchema.parse(payload);
 }
 
-const widgetSchema = z.object({ kind: z.literal("widget"), actions: z.object({ quantities: z.array(z.object({ item_id: z.string(), position: z.number().int().positive(), minimum: z.number().int().nonnegative(), maximum: z.number().int().min(0).max(99) }).strict()), checkout: z.boolean() }).strict(), widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), locale: z.enum(["en", "ar"]), payload: cardSchema, menu_view_id: z.string().min(1).max(128), cart_revision: z.string().length(64), menu: menuSchema, cart: cartSchema }).strict();
+const widgetSchema = z.object({ kind: z.literal("widget"), actions: z.object({ quantities: z.array(z.object({ item_id: z.string(), position: z.number().int().positive(), minimum: z.number().int().nonnegative(), maximum: z.number().int().min(0).max(99) }).strict()), checkout: z.boolean(), locales: z.array(z.enum(["en", "ar"])).min(1).max(2) }).strict(), widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), locale: z.enum(["en", "ar"]), payload: cardSchema, menu_view_id: z.string().min(1).max(128), cart_revision: z.string().length(64), menu: menuSchema, cart: cartSchema }).strict();
 export type WidgetEnvelope = z.infer<typeof widgetSchema>;
 export type WidgetView = { widget_id: string; revision: number };
 export async function acknowledgeWidget(widget: WidgetEnvelope): Promise<void> {
@@ -198,7 +208,7 @@ export async function acknowledgeConfirmation(view: CheckoutView, locale: "en" |
   if (!response.ok) throw new Error(`Confirmation acknowledgement failed (${response.status}). Review your cart again.`);
   checkoutViewSchema.parse(await response.json() as unknown);
 }
-const snapshotSchema = z.object({ state_revision: z.number().int().positive(), widgets: z.object({ en: widgetSchema, ar: widgetSchema }).strict(), menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict(), menu_view_ids: z.object({ en: z.string().min(1).max(128), ar: z.string().min(1).max(128) }).strict() }).strict();
+const snapshotSchema = z.object({ locale: z.enum(["en", "ar"]), confirmation: z.object({ widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), sequence: z.number().int().positive(), active: z.boolean() }).strict().nullable(), state_revision: z.number().int().positive(), widgets: z.object({ en: widgetSchema, ar: widgetSchema }).strict(), menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict(), menu_view_ids: z.object({ en: z.string().min(1).max(128), ar: z.string().min(1).max(128) }).strict() }).strict();
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export function readSnapshotRevision(source: string): number {
   return z.object({ state_revision: z.number().int().positive() }).parse(JSON.parse(source) as unknown).state_revision;

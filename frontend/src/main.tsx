@@ -2,7 +2,7 @@ import { Component, StrictMode, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
-import { acknowledgeConfirmation, acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, fetchState, parseSnapshot, readSnapshotRevision, restockItem, sellOutItem, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
+import { acknowledgeConfirmation, acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, fetchState, parseSnapshot, readSnapshotRevision, restockItem, sellOutItem, setWidgetLocale, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
 import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult, WidgetEnvelope, CheckoutView } from "./api";
 import { Chart } from "./Chart";
 import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
@@ -137,11 +137,14 @@ function App(): ReactElement {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(readConfirmation);
   const [checkoutRevision, setCheckoutRevision] = useState<string | null>(null);
   const [checkoutView, setCheckoutView] = useState<CheckoutView | null>(null);
+  const [confirmationStatus, setConfirmationStatus] = useState<Snapshot["confirmation"]>(null);
   const [checkoutInvalidated, setCheckoutInvalidated] = useState<boolean>(false);
 
   useEffect(() => {
-    if (checkoutView !== null && cart !== null && checkoutView.cart_revision !== cart.revision) setCheckoutInvalidated(true);
-  }, [checkoutView, cart]);
+    if (checkoutView === null) return;
+    if (cart !== null && checkoutView.cart_revision !== cart.revision) setCheckoutInvalidated(true);
+    if (confirmationStatus !== null && confirmationStatus.sequence >= checkoutView.sequence && (confirmationStatus.widget_id !== checkoutView.widget_id || !confirmationStatus.active)) setCheckoutInvalidated(true);
+  }, [checkoutView, cart, confirmationStatus]);
   const orderingMenuRef = useRef<HTMLDivElement | null>(null);
   const pendingChanges = useRef<number>(0);
   const editAttempt = useRef<{ widgetId: string; actionId: string } | null>(null);
@@ -155,6 +158,23 @@ function App(): ReactElement {
   const appliedRevision = useRef<number>(0);
   const invalidRevision = useRef<number | null>(null);
 
+
+  async function changeLocale(locale: "en" | "ar"): Promise<void> {
+    if (displayedMenu === null || !live || pendingChanges.current > 0 || locale === chatLocale) return;
+    const widget: WidgetEnvelope = displayedMenu.envelopes[chatLocale];
+    pendingChanges.current += 1;
+    setLive(false);
+    setCartPending(true);
+    try {
+      await setWidgetLocale(widget, crypto.randomUUID(), locale);
+      setCartError("");
+    } catch (error: unknown) {
+      setCartError(error instanceof Error ? `Language change failed: ${error.message} Resync to retrieve the saved language.` : "Language change failed. Resync to retrieve the saved language.");
+    } finally {
+      pendingChanges.current -= 1;
+      setCartPending(false);
+    }
+  }
 
   async function reviewOrder(): Promise<void> {
     if (cart === null || displayedMenu === null || !live || pendingChanges.current > 0 || confirmation !== null || Object.keys(quantityEdits).length > 0 || cart.items.length === 0) return;
@@ -260,6 +280,8 @@ function App(): ReactElement {
       setDisplayedMenu({ menu: snapshot.menu, widgets: snapshot.menu_widgets, ids: snapshot.menu_view_ids, envelopes: snapshot.widgets });
       setMenu(snapshot.menu);
       setCart(snapshot.cart);
+      setChatLocale(snapshot.locale);
+      setConfirmationStatus(snapshot.confirmation);
     }
     function connect(): void {
       if (!active) return;
@@ -508,7 +530,7 @@ function App(): ReactElement {
       </section>
     </div>
     <section className="panel menu-panel" aria-labelledby="chat-title">
-      <div className="menu-heading"><div><span className="step">RESTAURANT ASSISTANT / المساعد</span><h2 id="chat-title">Ask about the menu</h2></div><div><label htmlFor="chat-language">Language </label><select id="chat-language" value={chatLocale} onChange={(event) => setChatLocale(event.target.value as "en" | "ar")}><option value="en">English</option><option value="ar">العربية</option></select></div></div>
+      <div className="menu-heading"><div><span className="step">RESTAURANT ASSISTANT / المساعد</span><h2 id="chat-title">Ask about the menu</h2></div><div><label htmlFor="chat-language">Language </label><select id="chat-language" value={chatLocale} disabled={!live || cartPending || chatPending} onChange={(event) => { void changeLocale(event.target.value as "en" | "ar"); }}><option value="en">English</option><option value="ar">العربية</option></select></div></div>
       <p className="menu-help">Ask in English or Arabic. Suggested cart changes require your approval.</p>
       <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && (message.streaming || message.widget?.kind === "card") && <div className="summary-card" role="region" aria-label={message.locale === "ar" ? "ملخص المساعد" : "Assistant summary"} aria-busy={message.widget === null && !message.incomplete} tabIndex={0} lang={message.locale} dir={message.locale === "ar" ? "rtl" : "ltr"}>{message.widget ? <Preview card={message.widget} /> : <div className="widget-card">{message.streaming?.map((component) => <PreviewNode key={component.index} node={component.node} />)}</div>}{message.incomplete && <p className="problem" role="status">{message.locale === "ar" ? "هذا الملخص غير مكتمل." : "This summary is incomplete."}</p>}</div>}{message.role === "assistant" && message.widget?.kind === "list" && <div className="chat-widget" ref={index === activeMenuIndex ? orderingMenuRef : null} lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && displayedMenu && cart ? <OrderingMenu menu={displayedMenu.menu} cart={cart} card={displayedMenu.widgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onReview={() => { void reviewOrder(); }} onChange={(change: CartChange) => changeWidgetQuantity(change, displayedMenu.envelopes[chatLocale])} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}
         {order ? <OrderReceipt order={order} locale={chatLocale} disabled={cartPending || !live} onStart={editOrder} /> : confirmation ? <ConfirmationRecovery locale={chatLocale} disabled={cartPending || !live} error={cartError} onRetry={() => { void confirmCart(); }} /> : checkoutRevision !== null && checkoutView !== null && cart && <OrderReview invalidated={checkoutInvalidated} view={checkoutView} renderCard={(card: Card) => <Preview card={card} />} cart={cart} reviewedRevision={checkoutRevision} locale={chatLocale} disabled={cartPending || !live} hasDrafts={Object.keys(quantityEdits).length > 0} error={cartError} onEdit={() => { void abandonReview(); }} onReview={() => { void reviewOrder(); }} onConfirm={() => { void confirmCart(); }} />}

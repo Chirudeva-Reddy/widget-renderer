@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.events import issue_menu_widget, read_snapshot
 from app.confirmation_widget import ConfirmationViewError, acknowledge_confirmation
 from app.widgets import WidgetError, acknowledge_widget, initialize_widgets
-from app.widget_actions import WidgetActionError, apply_widget_quantity, confirm_widget_order, edit_widget_order, initialize_widget_actions, start_checkout
+from app.widget_actions import ActionIdConflict, DisabledWidgetAction, StaleWidget, set_widget_locale, WidgetActionError, apply_widget_quantity, confirm_widget_order, edit_widget_order, initialize_widget_actions, start_checkout
 from app.menu_views import MenuViewError, initialize_menu_views
 from app.chat import ChatError, ProviderError, initialize_chat, respond
 
@@ -284,13 +284,29 @@ class WidgetCheckoutRequest(BaseModel):
     payload: WidgetCheckoutPayload
 
 
+class WidgetLocalePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    lang: Literal["en", "ar"]
+
+
+class WidgetLocaleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    action_id: str = Field(min_length=1, max_length=128)
+    type: Literal["locale.set"]
+    payload: WidgetLocalePayload
+
+
 @app.post("/api/actions", response_model=None)
-def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest, request: Request) -> JSONResponse:
+def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest | WidgetLocaleRequest, request: Request) -> JSONResponse:
     if not is_local_demo_request(request, "widget-action"):
         return error_response(403, "invalid_origin", "Widget actions require the local application.")
     action = {"widget_id": payload.widget_id, "revision": payload.revision, "action_id": payload.action_id, "type": payload.type, **payload.payload.model_dump()}
     try:
         token: str = request.cookies.get("restaurant_session", "")
+        if payload.type == "locale.set":
+            return JSONResponse(content=set_widget_locale(DATABASE_PATH, token, action))
         if payload.type == "cart.set_quantity":
             return JSONResponse(content=apply_widget_quantity(DATABASE_PATH, token, action))
         if payload.type == "checkout.start":
@@ -300,6 +316,12 @@ def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest, reques
         return JSONResponse(content=edit_widget_order(DATABASE_PATH, token, action))
     except SessionError:
         return error_response(401, "session_required", "Start a session to use widget actions.")
+    except ActionIdConflict as error:
+        return error_response(409, "action_id_conflict", str(error))
+    except StaleWidget as error:
+        return error_response(409, "stale_widget", str(error))
+    except DisabledWidgetAction as error:
+        return error_response(409, "disabled_action", str(error))
     except (WidgetActionError, CartError, ConfirmationViewError) as error:
         return error_response(409, "widget_action_conflict", str(error))
 
