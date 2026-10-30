@@ -2,8 +2,8 @@ import { StrictMode, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
-import { ConfirmationConflict, confirmOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, startSession, streamChat, updateCart, validatePayload } from "./api";
-import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult } from "./api";
+import { acknowledgeWidget, ConfirmationConflict, confirmOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, startSession, streamChat, updateCart, validatePayload } from "./api";
+import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult, WidgetEnvelope } from "./api";
 import { Chart } from "./Chart";
 import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
 import { OrderingMenu } from "./OrderingMenu";
@@ -60,7 +60,7 @@ function readConfirmation(): Confirmation | null {
   return source === null ? null : confirmationSchema.parse(JSON.parse(source) as unknown);
 }
 
-type DisplayedMenu = { menu: Menu; widgets: { en: Card; ar: Card }; ids: { en: string; ar: string } };
+type DisplayedMenu = { menu: Menu; widgets: { en: Card; ar: Card }; ids: { en: string; ar: string }; envelopes: { en: WidgetEnvelope; ar: WidgetEnvelope } };
 
 type ChatMessage = { role: "user"; text: string } | { role: "assistant"; text: string; suggestion: ChatReply["suggestion"]; menuRevision: number; cartRevision: string; widget: Card | null; locale: "en" | "ar"; streaming?: { index: number; node: Node }[]; incomplete?: boolean };
 
@@ -99,7 +99,8 @@ function App(): ReactElement {
       const activeView: DisplayedMenu | null = activeMenuIndex >= 0 ? displayedMenu : null;
       const renderedViewId: string | null = activeView === null ? null : activeView.ids[chatLocale];
       const menuRevision: number = activeView === null ? menu.revision : activeView.menu.revision;
-      const reply: ChatReply = await streamChat(text, menuRevision, crypto.randomUUID(), chatLocale, renderedViewId, (event) => {
+      const envelope: WidgetEnvelope | null = activeView === null ? null : activeView.envelopes[chatLocale];
+      const reply: ChatReply = await streamChat(text, menuRevision, crypto.randomUUID(), chatLocale, renderedViewId, envelope === null ? null : { widget_id: envelope.widget_id, revision: envelope.revision }, (event) => {
         if (event.type === "card") {
           streamed = true;
           setChatMessages((messages: ChatMessage[]) => [...messages, { role: "assistant", text: event.text ?? "", suggestion: null, menuRevision, cartRevision: "", widget: null, locale: chatLocale, streaming: [] }]);
@@ -200,7 +201,7 @@ function App(): ReactElement {
             retry = window.setTimeout(connect, 2000);
           }, 10000);
           if (pendingChanges.current > 0) return;
-          setDisplayedMenu({ menu: snapshot.menu, widgets: snapshot.menu_widgets, ids: snapshot.menu_view_ids });
+          setDisplayedMenu({ menu: snapshot.menu, widgets: snapshot.menu_widgets, ids: snapshot.menu_view_ids, envelopes: snapshot.widgets });
           setMenu(snapshot.menu);
           setCart(snapshot.cart);
           setLive(true);
@@ -332,6 +333,16 @@ function App(): ReactElement {
   }
 
   const activeMenuIndex: number = chatMessages.reduce((last: number, message: ChatMessage, index: number) => message.role === "assistant" && message.widget?.kind === "list" ? index : last, -1);
+
+  const activeEnvelope: WidgetEnvelope | null = activeMenuIndex < 0 || displayedMenu === null ? null : displayedMenu.envelopes[chatLocale];
+  useEffect(() => {
+    if (activeEnvelope === null) return;
+    let active: boolean = true;
+    void acknowledgeWidget(activeEnvelope).catch((error: unknown) => {
+      if (active) setChatError(error instanceof Error ? error.message : "Widget acknowledgement failed.");
+    });
+    return () => { active = false; };
+  }, [activeEnvelope?.widget_id, activeEnvelope?.revision]);
 
   return <main className="shell">
     <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><span className="badge">PLAYGROUND <span> / 01</span></span></header>

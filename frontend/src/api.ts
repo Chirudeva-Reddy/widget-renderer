@@ -152,7 +152,15 @@ export async function confirmOrder(actionId: string, cartRevision: string): Prom
   return orderSchema.parse(payload);
 }
 
-const snapshotSchema = z.object({ menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict(), menu_view_ids: z.object({ en: z.string().min(1).max(128), ar: z.string().min(1).max(128) }).strict() }).strict();
+const widgetSchema = z.object({ kind: z.literal("widget"), widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), locale: z.enum(["en", "ar"]), payload: cardSchema, menu_view_id: z.string().min(1).max(128), cart_revision: z.string().length(64), menu: menuSchema, cart: cartSchema }).strict();
+export type WidgetEnvelope = z.infer<typeof widgetSchema>;
+export type WidgetView = { widget_id: string; revision: number };
+export async function acknowledgeWidget(widget: WidgetEnvelope): Promise<void> {
+  const response: Response = await fetch(`/api/widgets/${encodeURIComponent(widget.widget_id)}/rendered`, { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-rendered" }, body: JSON.stringify({ revision: widget.revision }) });
+  if (!response.ok) throw new Error(`Widget acknowledgement failed (${response.status}).`);
+  widgetSchema.parse(await response.json() as unknown);
+}
+const snapshotSchema = z.object({ widgets: z.object({ en: widgetSchema, ar: widgetSchema }).strict(), menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict(), menu_view_ids: z.object({ en: z.string().min(1).max(128), ar: z.string().min(1).max(128) }).strict() }).strict();
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export function parseSnapshot(source: string): Snapshot {
   const payload: unknown = JSON.parse(source);
@@ -171,10 +179,10 @@ const streamEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("card"), text: z.string().max(1200).nullable() }).strict(),
   z.object({ type: z.literal("component"), index: z.number().int().min(0).max(99), node: nodeSchema }).strict(),
 ]);
-export async function streamChat(text: string, menuRevision: number, messageId: string, locale: "en" | "ar", renderedViewId: string | null, onEvent: (event: ChatStreamEvent) => void): Promise<ChatReply> {
+export async function streamChat(text: string, menuRevision: number, messageId: string, locale: "en" | "ar", renderedViewId: string | null, widgetView: WidgetView | null, onEvent: (event: ChatStreamEvent) => void): Promise<ChatReply> {
   const response: Response = await fetch("/api/chat/stream", {
     method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "chat" },
-    body: JSON.stringify({ text, menu_revision: menuRevision, client_message_id: messageId, locale, rendered_view_id: renderedViewId }),
+    body: JSON.stringify({ text, menu_revision: menuRevision, client_message_id: messageId, locale, rendered_view_id: renderedViewId, widget_view: widgetView }),
   });
   if (!response.ok || response.body === null) {
     const error = z.object({ message: z.string() }).safeParse(await response.json().catch(() => null));

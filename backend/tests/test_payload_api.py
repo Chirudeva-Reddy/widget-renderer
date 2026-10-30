@@ -101,6 +101,17 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual(acknowledged[0], second["revision"])
         self.assertEqual(json.loads(stored[0]), first)
 
+    def test_chat_rejects_foreign_and_mismatched_widget_references(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        widget = self.widget("en", cookie)
+        reference = {"widget_id": widget["widget_id"], "revision": widget["revision"]}
+        request = {"client_message_id": "widget-chat", "text": "Show the second item", "menu_revision": widget["menu"]["revision"], "locale": "en", "rendered_view_id": widget["menu_view_id"], "widget_view": reference}
+        self.assertEqual(self.restaurant_request("chat", request, other, "chat")[0], 409)
+        self.assertEqual(self.restaurant_request("chat", {**request, "widget_view": {**reference, "revision": 999}}, cookie, "chat")[0], 409)
+        self.assertEqual(self.restaurant_request("chat", {**request, "rendered_view_id": None}, cookie, "chat")[0], 409)
+        self.assertEqual(self.restaurant_request("chat", {**request, "locale": "ar"}, cookie, "chat")[0], 409)
+
     def test_concurrent_quantity_changes_reject_stale_cart(self) -> None:
         _, cart, cookie = self.restaurant_request("session", {}, "", "session")
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/menu") as response:
@@ -268,7 +279,7 @@ class PayloadApiTests(unittest.TestCase):
         sequence: int = before["completed_actions"][-1]["sequence"]
         reply = {"text": "Proposed hummus", "suggestion": {"item_id": "hummus", "quantity": 1}, "menu_revision": before["snapshot"]["menu"]["revision"], "cart_revision": cart["revision"], "widget": None, "locale": "en"}
         result = subprocess.run(
-            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import begin_turn, finish_turn, read_history; path = Path(sys.argv[1]); token = sys.argv[2]; reply = json.loads(sys.argv[3]); begin_turn(path, token, 'proposal', 'Add hummus', reply['menu_revision'], 'en', None); finish_turn(path, token, 'proposal', reply, int(sys.argv[4])); print(json.dumps(read_history(path, token)))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reply), str(sequence)],
+            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import begin_turn, finish_turn, read_history; path = Path(sys.argv[1]); token = sys.argv[2]; reply = json.loads(sys.argv[3]); begin_turn(path, token, 'proposal', 'Add hummus', reply['menu_revision'], 'en', None, None); finish_turn(path, token, 'proposal', reply, int(sys.argv[4])); print(json.dumps(read_history(path, token)))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reply), str(sequence)],
             cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True,
         )
         history = json.loads(result.stdout)

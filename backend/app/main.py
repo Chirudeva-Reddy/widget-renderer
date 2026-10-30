@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.cart import CartError, SessionError, confirm_order, create_session, get_cart, initialize_cart, initialize_orders, set_quantity
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.events import read_snapshot
-from app.widgets import WidgetError, acknowledge_widget, initialize_widgets, issue_menu_widget
+from app.events import issue_menu_widget, read_snapshot
+from app.widgets import WidgetError, acknowledge_widget, initialize_widgets
 from app.menu_views import MenuViewError, initialize_menu_views
 from app.chat import ChatError, ProviderError, initialize_chat, respond
 
@@ -110,10 +110,17 @@ def order_confirm(payload: ConfirmOrderRequest, request: Request) -> JSONRespons
 
 
 
+class WidgetViewReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     client_message_id: str = Field(min_length=1, max_length=128)
     rendered_view_id: str | None = Field(min_length=1, max_length=128)
+    widget_view: WidgetViewReference | None = None
     text: str = Field(min_length=1, max_length=2000)
     menu_revision: int = Field(ge=1)
     locale: Literal["en", "ar"]
@@ -124,7 +131,7 @@ async def chat(payload: ChatRequest, request: Request) -> JSONResponse:
     if not is_local_demo_request(request, "chat"):
         return error_response(403, "invalid_origin", "Chat requires the local application.")
     try:
-        reply = await respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id)
+        reply = await respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None, None if payload.widget_view is None else payload.widget_view.model_dump())
         return JSONResponse(content=reply)
     except SessionError:
         return error_response(401, "session_required", "Start a session to use chat.")
@@ -142,7 +149,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
     if not is_local_demo_request(request, "chat"):
         return error_response(403, "invalid_origin", "Chat requires the local application.")
     queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
-    task = asyncio.create_task(respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, lambda event, data: queue.put_nowait((event, data))))
+    task = asyncio.create_task(respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, lambda event, data: queue.put_nowait((event, data)), None if payload.widget_view is None else payload.widget_view.model_dump()))
     started = asyncio.create_task(queue.get())
     await asyncio.wait({task, started}, return_when=asyncio.FIRST_COMPLETED)
     first: list[tuple[str, object]] = [started.result()] if started.done() else []
