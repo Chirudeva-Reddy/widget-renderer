@@ -12,8 +12,9 @@ def build_menu_widget(menu: MenuResponse, locale: Literal["en", "ar"]) -> Contai
         price: str = f"AED {item['price_minor'] // 100}.{item['price_minor'] % 100:02d}"
         items.append({"type": "ListViewItem", "key": item["id"], "children": [
             {"type": "Row", "children": [
-                {"type": "Title", "value": f"{item['position']}. {item['name'][locale]}"},
-                {"type": "Text", "value": price},
+                {"type": "Box", "children": [{"type": "Title", "value": str(item["position"])}]},
+                {"type": "Col", "children": [{"type": "Title", "value": item["name"][locale]}, {"type": "Caption", "value": price}]},
+                {"type": "Spacer"},
             ]},
             {"type": "Badge", "label": status},
         ]})

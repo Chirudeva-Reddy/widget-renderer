@@ -5,8 +5,7 @@ type Locale = "en" | "ar";
 
 function OrderLines({ items, locale }: { items: Cart["items"]; locale: Locale }): ReactElement {
   return <ul className="checkout-lines">{items.map((item) => <li key={item.id}>
-    <strong>{locale === "ar" ? item.name_ar : item.name_en}</strong>
-    <span><bdi>{item.quantity} × AED {(item.price_minor / 100).toFixed(2)} = AED {(item.quantity * item.price_minor / 100).toFixed(2)}</bdi></span>
+    <div className="checkout-line-main"><span className="checkout-line-tile" aria-hidden="true">{item.quantity}</span><div><strong>{locale === "ar" ? item.name_ar : item.name_en}</strong><span className="checkout-unit"><bdi>{item.quantity} × AED {(item.price_minor / 100).toFixed(2)}</bdi></span></div><strong className="checkout-line-total"><bdi>AED {(item.quantity * item.price_minor / 100).toFixed(2)}</bdi></strong></div>
     {!item.available && <span className="notice">{locale === "ar" ? "نفد هذا الصنف. عدّل الطلب لإزالته." : "Sold out. Edit your order to remove this item."}</span>}
   </li>)}</ul>;
 }
@@ -20,10 +19,11 @@ export function OrderReview({ cart, reviewedRevision, locale, disabled, hasDraft
   const arabic: boolean = locale === "ar";
   const stale: boolean = cart.revision !== reviewedRevision;
   return <section className="widget-card checkout-card" aria-label={arabic ? "مراجعة الطلب" : "Order review"} lang={locale} dir={arabic ? "rtl" : "ltr"}>
-    <h3>{arabic ? "راجع طلبك" : "Review your order"}</h3>
+    <div className="checkout-heading"><span aria-hidden="true">✓</span><div><h3>{arabic ? "راجع طلبك" : "Review your order"}</h3><p>{arabic ? "تحقق من الأصناف قبل التأكيد" : "Check your items before confirming"}</p></div></div>
     <OrderLines items={cart.items} locale={locale} />
     {cart.items.length === 0 && <p>{arabic ? "سلتك فارغة." : "Your cart is empty."}</p>}
-    <p>{arabic ? "إجمالي الأصناف المختارة" : "Selected items total"}: <bdi>AED {(cart.total_minor / 100).toFixed(2)}</bdi></p>
+    <div className="checkout-total"><span>{arabic ? "إجمالي الأصناف المختارة" : "Selected items total"}</span><strong><bdi>AED {(cart.total_minor / 100).toFixed(2)}</bdi></strong></div>
+    {!cart.can_checkout && cart.items.length > 0 && <p className="notice" role="status">{arabic ? "أزل الأصناف غير المتوفرة قبل تأكيد الطلب." : "Remove sold-out items before confirming your order."}</p>}
     {stale && <div className="notice" role="status"><p>{arabic ? "تغيرت السلة أو حالة التوفر. راجع الطلب المحدّث قبل التأكيد." : "Your cart or availability changed. Review the updated order before confirming."}</p><button type="button" disabled={disabled || hasDrafts} onClick={onReview}>{arabic ? "مراجعة الطلب المحدّث" : "Review updated order"}</button></div>}
     {hasDrafts && <p className="notice">{arabic ? "طبّق الكميات المدخلة قبل التأكيد." : "Apply your entered quantities before confirming."}</p>}
     {disabled && <p className="notice" role="status">{arabic ? "انتظر اكتمال التحديثات المباشرة قبل المتابعة." : "Wait for live updates and pending changes before continuing."}</p>}

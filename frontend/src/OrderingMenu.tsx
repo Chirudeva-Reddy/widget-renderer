@@ -30,10 +30,12 @@ function QuantityEditor({ item, cart, locale, disabled, edit, setEdit, onChange 
   }
 
   return <form className="quantity-editor" onSubmit={submit}>
+    <button type="button" className="quantity-step" aria-label={`${arabic ? "تقليل" : "Decrease"} ${item.name[locale]}`} disabled={disabled || stale || edit !== null || quantity === 0} onClick={() => { void save({ value: String(quantity - 1), cartRevision: cart.revision, actionId: crypto.randomUUID() }); }}>−</button>
     <label><span>{arabic ? "الكمية" : "Quantity"} · {item.name[locale]}</span>
       <input type="number" min="0" max={maximum} step="1" required value={value} disabled={disabled}
         onChange={(event) => setEdit({ value: event.target.value, cartRevision: edit?.cartRevision ?? cart.revision, actionId: crypto.randomUUID() })} />
     </label>
+    <button type="button" className="quantity-step" aria-label={`${arabic ? "زيادة" : "Increase"} ${item.name[locale]}`} disabled={disabled || stale || edit !== null || !item.available || quantity >= 99} onClick={() => { void save({ value: String(quantity + 1), cartRevision: cart.revision, actionId: crypto.randomUUID() }); }}>+</button>
     <button type="submit" disabled={disabled || stale || !valid || edit === null}>{arabic ? "تطبيق" : "Apply"}</button>
     <button type="button" disabled={disabled || stale || quantity === 0} onClick={() => { void save({ value: "0", cartRevision: cart.revision, actionId: crypto.randomUUID() }); }}>{arabic ? "إزالة" : "Remove"}</button>
     {!item.available && <p className="notice">{arabic ? "نفد هذا الصنف. يمكنك تقليل الكمية أو إزالته." : "Sold out. You can reduce the quantity or remove this item."}</p>}
@@ -51,6 +53,7 @@ type OrderingMenuProps = {
 export function OrderingMenu({ menu, cart, card, locale, disabled, error, edits, onEdit, onReview, onChange, renderNode }: OrderingMenuProps): ReactElement {
   if (card.kind !== "list" || card.children.length !== menu.items.length) throw new Error("The ordering menu does not match its authoritative dish rows.");
   return <div className="ordering-menu">
+    <div className="ordering-header"><strong>{locale === "ar" ? "قائمة الطعام" : "Order food"}</strong><span>{locale === "ar" ? "اختر أصنافك" : "Choose your dishes"}</span></div>
     {menu.items.map((item, index) => <div className="ordering-item" key={item.id}>
       {renderNode(card.children[index])}
       <QuantityEditor item={item} cart={cart} locale={locale} disabled={disabled} edit={edits[item.id] ?? null} setEdit={(edit: QuantityEdit | null) => onEdit(item.id, edit)} onChange={onChange} />

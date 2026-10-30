@@ -44,6 +44,9 @@ class ControlApiTests(unittest.TestCase):
         result = self.validate({"type": "Form", "children": [field, field]})
         self.assertEqual(result["preview"]["children"][1]["kind"], "problem")
         self.assertEqual(result["issues"][0]["code"], "duplicate_field_name")
+        nested = self.validate({"type": "Form", "children": [field, {"type": "Box", "children": [field, {"type": "Spacer"}]}]})
+        self.assertEqual(nested["preview"]["children"][1]["kind"], "problem")
+        self.assertEqual(nested["issues"][0]["code"], "duplicate_field_name")
 
 
 if __name__ == "__main__":

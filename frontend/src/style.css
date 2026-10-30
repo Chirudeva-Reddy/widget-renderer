@@ -61,3 +61,30 @@ footer { display: flex; justify-content: space-between; gap: 12px; color: #a0a69
 .checkout-lines { list-style: none; padding: 0; margin: 0; }
 .checkout-lines li { display: grid; gap: .4rem; padding-block: .75rem; border-block-end: 1px solid #dedfd5; }
 .checkout-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-block-start: 1rem; }
+
+.widget-spacer { flex: 1; }
+.widget-box { display: grid; place-items: center; flex: 0 0 42px; min-height: 42px; border-radius: 12px; background: #e2e9dc; }
+.ordering-menu { background: #f5f7f2; border-radius: 16px; padding: 16px; }
+.ordering-header { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: #e5ecdf; border-radius: 12px; }
+.ordering-header span { font-size: 12px; color: #53634c; }
+.ordering-item { padding: 14px 0; border-bottom: 1px solid #dce4d7; }
+.ordering-item .widget-row { align-items: center; gap: 12px; }
+.ordering-item .widget-col { min-width: 0; }
+.quantity-editor { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; margin-top: 10px; }
+.quantity-editor label { min-width: 0; }
+.quantity-editor .quantity-step { min-width: 40px; }
+.quantity-editor .notice { flex-basis: 100%; }
+@media (max-width: 480px) { .ordering-menu { padding: 10px; } .quantity-editor label { flex: 1 1 110px; } }
+
+.checkout-card { border-radius: 16px; padding: 20px; background: #f5f7f2; }
+.checkout-heading { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 12px; background: #e5ecdf; }
+.checkout-heading > span, .checkout-line-tile { display: grid; place-items: center; flex: 0 0 40px; height: 40px; border-radius: 10px; background: #d3e0cd; color: #314b2e; font-weight: 700; }
+.checkout-heading h3 { margin: 0; }
+.checkout-heading p { margin: 3px 0 0; color: #53634c; font-size: 12px; }
+.checkout-line-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.checkout-line-main > div { min-width: 0; flex: 1; }
+.checkout-unit { display: block; margin-top: 4px; color: #687263; font-size: 12px; }
+.checkout-line-total { white-space: nowrap; }
+.checkout-total { display: flex; justify-content: space-between; gap: 12px; padding: 16px 0; }
+.checkout-actions button { flex: 1 1 130px; }
+@media (max-width: 480px) { .checkout-card { padding: 12px; } .checkout-line-main { flex-wrap: wrap; } }

@@ -4,6 +4,7 @@ export type Node =
   | { kind: "text" | "title" | "caption"; value: string; weight?: "normal" | "medium" | "semibold" | "bold" }
   | { kind: "badge"; label: string }
   | { kind: "divider" }
+  | { kind: "spacer" }
   | { kind: "table"; rows: TableRow[] }
   | ChartNode
   | ControlNode
@@ -16,7 +17,7 @@ export type ControlNode =
 export type ChartNode = { kind: "chart"; points: { label: string; values: number[] }[]; series: { type: "bar" | "line"; label: string; color?: "blue" | "purple" | "orange" | "green" | "red" | "yellow" | "pink" }[]; show_y_axis: boolean; show_legend: boolean };
 export type TableRow = { header: boolean; cells: TableCell[] };
 export type TableCell = { children: Node[]; align?: "start" | "center" | "end" };
-export type Container = { kind: "card" | "list" | "list_item" | "row" | "col" | "form"; children: Node[]; gap?: number };
+export type Container = { kind: "card" | "list" | "list_item" | "row" | "col" | "form" | "box"; children: Node[]; gap?: number };
 const nodeSchema: z.ZodType<Node> = z.lazy(() => z.discriminatedUnion("kind", [
   z.object({ kind: z.enum(["text", "title", "caption"]), value: z.string(), weight: z.enum(["normal", "medium", "semibold", "bold"]).optional() }).strict(),
   z.object({ kind: z.literal("button"), label: z.string().max(256) }).strict(),
@@ -24,12 +25,13 @@ const nodeSchema: z.ZodType<Node> = z.lazy(() => z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("select"), name: z.string().max(64), value: z.string().max(256), placeholder: z.string().max(256), disabled: z.boolean(), options: z.array(z.object({ value: z.string().max(256), label: z.string().max(256), disabled: z.boolean() }).strict()).min(1).max(100) }).strict(),
   z.object({ kind: z.literal("badge"), label: z.string() }).strict(),
   z.object({ kind: z.literal("divider") }).strict(),
+  z.object({ kind: z.literal("spacer") }).strict(),
   z.object({ kind: z.literal("chart"), points: z.array(z.object({ label: z.string(), values: z.array(z.number().finite()).min(1).max(4) }).strict()).min(1).max(200), series: z.array(z.object({ type: z.enum(["bar", "line"]), label: z.string(), color: z.enum(["blue", "purple", "orange", "green", "red", "yellow", "pink"]).optional() }).strict()).min(1).max(4), show_y_axis: z.boolean(), show_legend: z.boolean() }).strict().refine((chart) => chart.points.every((point) => point.values.length === chart.series.length)),
   z.object({ kind: z.literal("table"), rows: z.array(z.object({
     header: z.boolean(), cells: z.array(z.object({ children: z.array(nodeSchema).max(100), align: z.enum(["start", "center", "end"]).optional() }).strict()).max(20),
   }).strict()).max(100) }).strict(),
   z.object({ kind: z.literal("problem"), message: z.string() }).strict(),
-  z.object({ kind: z.enum(["card", "list", "list_item", "row", "col", "form"]), children: z.array(nodeSchema).max(100), gap: z.number().int().min(0).max(8).optional() }).strict(),
+  z.object({ kind: z.enum(["card", "list", "list_item", "row", "col", "form", "box"]), children: z.array(nodeSchema).max(100), gap: z.number().int().min(0).max(8).optional() }).strict(),
 ]));
 const cardSchema: z.ZodType<Container> = z.object({
   kind: z.enum(["card", "list"]), children: z.array(nodeSchema).max(100),

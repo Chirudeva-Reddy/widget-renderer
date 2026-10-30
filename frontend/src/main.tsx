@@ -26,6 +26,7 @@ function PreviewNode({ node }: { node: Node }): ReactElement {
   if (node.kind === "button" || node.kind === "input" || node.kind === "select") return <PreviewControl control={node} />;
   if ("value" in node) return <p className={`widget-text widget-${node.kind}${node.weight ? ` weight-${node.weight}` : ""}`} dir="auto">{node.value}</p>;
   if (node.kind === "badge") return <span className="widget-badge" dir="auto">{node.label}</span>;
+  if (node.kind === "spacer") return <span className="widget-spacer" aria-hidden="true" />;
   if (node.kind === "divider") return <hr className="widget-divider" />;
   if (node.kind === "form") return <fieldset className="widget-form"><legend>Form preview · actions disabled</legend>{node.children.map((child, index) => <PreviewNode key={index} node={child} />)}</fieldset>;
   if (node.kind === "chart") return <Chart chart={node} />;

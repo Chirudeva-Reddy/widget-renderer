@@ -27,13 +27,17 @@ class DividerNode(TypedDict):
     kind: Literal["divider"]
 
 
+class SpacerNode(TypedDict):
+    kind: Literal["spacer"]
+
+
 class ProblemNode(TypedDict):
     kind: Literal["problem"]
     message: str
 
 
 class ContainerNode(TypedDict):
-    kind: Literal["card", "list", "list_item", "row", "col", "form"]
+    kind: Literal["card", "list", "list_item", "row", "col", "form", "box"]
     children: list["Node"]
     gap: NotRequired[int]
 
@@ -53,7 +57,7 @@ class TableNode(TypedDict):
     rows: list[TableRow]
 
 
-Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode | TableNode | ChartNode | ControlNode
+Node = TextNode | BadgeNode | DividerNode | SpacerNode | ProblemNode | ContainerNode | TableNode | ChartNode | ControlNode
 
 
 class ValidationResult(TypedDict):
@@ -151,8 +155,8 @@ def validate_source(source: str) -> ValidationResult:
 
 
 def validate_container(data: dict[str, object], path: str, component: str) -> tuple[ContainerNode, list[Issue]]:
-    kinds: dict[str, Literal["card", "list", "list_item", "row", "col", "form"]] = {
-        "Card": "card", "ListView": "list", "ListViewItem": "list_item", "Row": "row", "Col": "col", "Form": "form",
+    kinds: dict[str, Literal["card", "list", "list_item", "row", "col", "form", "box"]] = {
+        "Card": "card", "ListView": "list", "ListViewItem": "list_item", "Row": "row", "Col": "col", "Form": "form", "Box": "box",
     }
     children: object = data.get("children")
     if not isinstance(children, list):
@@ -182,7 +186,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
                 continue
             seen_keys.add(child_key)
         child_type: object = child.get("type") if isinstance(child, dict) else None
-        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Table", "Chart", "Row", "Col", "Form", "Button", "Input", "Select"))
+        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Table", "Chart", "Row", "Col", "Box", "Spacer", "Form", "Button", "Input", "Select"))
         if not isinstance(child, dict) or not allowed:
             issues.append(issue("unsupported_child", child_path, "error", "Child is unsupported or invalid."))
             nodes.append({"kind": "problem", "message": "This item could not be displayed."})
@@ -247,6 +251,11 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             if child.get("key") is not None and not isinstance(child.get("key"), str):
                 issues.append(issue("invalid_key", f"{child_path}.key", "warning", "Key must be a string or null."))
             nodes.append({"kind": "badge", "label": label})
+        elif child_type == "Spacer":
+            for prop in child:
+                if prop not in {"type", "key"}:
+                    issues.append(issue("unsupported_property", f"{child_path}.{prop}", "warning", "Property is not supported."))
+            nodes.append({"kind": "spacer"})
         elif child_type == "Divider":
             for prop in child:
                 if prop not in {"type", "key"}:
@@ -277,7 +286,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
 
 
 def count_nodes(node: Node) -> int:
-    if node["kind"] in ("text", "title", "caption", "badge", "divider", "chart", "button", "input", "select", "problem"):
+    if node["kind"] in ("text", "title", "caption", "badge", "divider", "spacer", "chart", "button", "input", "select", "problem"):
         return 1
     if node["kind"] == "table":
         return 1 + sum(1 + sum(1 + sum(count_nodes(child) for child in cell["children"]) for cell in row["cells"]) for row in node["rows"])
@@ -365,7 +374,7 @@ def duplicate_table_key(data: dict[str, object], keys: set[str], path: str, issu
 def field_names(node: Node) -> list[str]:
     if node["kind"] in ("input", "select"):
         return [node["name"]]
-    if node["kind"] in ("card", "list", "list_item", "row", "col", "form"):
+    if node["kind"] in ("card", "list", "list_item", "row", "col", "form", "box"):
         return [name for child in node["children"] for name in field_names(child)]
     if node["kind"] == "table":
         return [name for row in node["rows"] for cell in row["cells"] for child in cell["children"] for name in field_names(child)]
