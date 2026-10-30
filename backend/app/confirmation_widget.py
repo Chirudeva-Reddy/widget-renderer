@@ -23,8 +23,10 @@ class ConfirmationActionBinding(TypedDict):
 
 
 class CheckoutView(TypedDict):
+    """Immutable review whose sequence orders issuance separately from widget revisions."""
     kind: Literal["widget"]
     role: Literal["confirmation"]
+    sequence: int
     payload: ConfirmationPayloads
     actions: list[ConfirmationActionBinding]
     cart_revision: str
@@ -36,6 +38,19 @@ class CheckoutView(TypedDict):
 class ConfirmationReference(TypedDict):
     widget_id: str
     revision: int
+
+
+class ConfirmationStatus(TypedDict):
+    widget_id: str
+    revision: int
+    sequence: int
+    active: bool
+
+
+def read_latest_confirmation_status(connection: sqlite3.Connection, session_hash: str, cart_revision: str) -> ConfirmationStatus | None:
+    """Expose the newest review's status without reissuing or reviving its controls."""
+    row: tuple[str, int, str, int] | None = connection.execute("SELECT id, rowid, cart_revision, consumed FROM checkout_views WHERE session_hash = ? ORDER BY rowid DESC LIMIT 1", (session_hash,)).fetchone()
+    return None if row is None else {"widget_id": row[0], "revision": 1, "sequence": row[1], "active": row[3] == 0 and row[2] == cart_revision}
 
 
 def read_confirmation_view(connection: sqlite3.Connection, session_hash: str, reference: ConfirmationReference) -> CheckoutView:

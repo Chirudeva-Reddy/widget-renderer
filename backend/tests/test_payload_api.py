@@ -9,6 +9,7 @@ import unittest
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +239,7 @@ else:
             disabled_status, disabled_error, _ = self.restaurant_request("actions", {"widget_id": blocked["widget_id"], "revision": 1, "action_id": "stock-disabled-confirm", "type": "order.confirm", "payload": {"cart_revision": blocked["cart_revision"]}}, cookie, "widget-action")
             self.assertEqual(disabled_status, 409)
             self.assertIn("disabled", disabled_error["message"])
+            self.assertEqual(disabled_error["code"], "disabled_action")
             quantity_binding = next(binding for binding in current_widget["actions"]["quantities"] if binding["item_id"] == "hummus")
             self.assertEqual(quantity_binding["maximum"], 1)
             invalid_quantity = {"widget_id": current_widget["widget_id"], "revision": current_widget["revision"], "action_id": "stock-increase-disabled", "type": "cart.set_quantity", "payload": {"item_id": "hummus", "position": quantity_binding["position"], "quantity": 2, "cart_revision": current["cart"]["revision"]}}
@@ -326,6 +328,72 @@ else:
         with urllib.request.urlopen(request, timeout=5) as response:
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             return json.load(response)
+
+    def test_locale_actions_are_owned_durable_and_retry_safe(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        initial = self.state(cookie)
+        self.assertEqual(initial["locale"], "en")
+        self.assertEqual(initial["widgets"]["en"]["actions"]["locales"], ["en", "ar"])
+        widget = initial["widgets"]["en"]
+        action = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "locale-ar", "type": "locale.set", "payload": {"lang": "ar"}}
+        self.assertEqual(self.restaurant_request("actions", action, other, "widget-action")[1]["code"], "stale_widget")
+        self.assertEqual(self.restaurant_request("actions", {**action, "revision": widget["revision"] + 1}, cookie, "widget-action")[1]["code"], "stale_widget")
+        self.assertEqual(self.restaurant_request("actions", {**action, "payload": {"lang": "fr"}}, cookie, "widget-action")[0], 422)
+        self.assertEqual(self.restaurant_request("actions", action, cookie, "widget-action")[:2], (200, {"locale": "ar"}))
+        updated = self.state(cookie)
+        self.assertEqual(updated["locale"], "ar")
+        self.assertEqual(updated, self.snapshot(cookie))
+        self.assertGreater(updated["state_revision"], initial["state_revision"])
+        self.assertEqual(updated["cart"], initial["cart"])
+        self.assertEqual(updated["widgets"], initial["widgets"])
+        self.assertEqual(self.state(other)["locale"], "en")
+        self.assertEqual(self.restaurant_request("actions", {**action, "payload": {"lang": "en"}}, cookie, "widget-action")[1]["code"], "action_id_conflict")
+        self.assertEqual(self.restaurant_request("actions", {**action, "action_id": "locale-en", "payload": {"lang": "en"}}, cookie, "widget-action")[0], 200)
+        self.assertEqual(self.restaurant_request("actions", action, cookie, "widget-action")[1], {"locale": "ar"})
+        self.assertEqual(self.state(cookie)["locale"], "en")
+        with closing(sqlite3.connect(Path(self.directory.name) / "test.sqlite")) as connection, connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM widget_actions WHERE action_id = 'locale-ar'").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT locale FROM session_preferences WHERE session_hash IN (SELECT session_hash FROM widget_actions WHERE action_id = 'locale-en')").fetchone()[0], "en")
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "locale-stale-cart", "item_id": "hummus", "quantity": 1, "cart_revision": updated["cart"]["revision"]}, cookie, "cart")
+        self.assertEqual(self.restaurant_request("actions", {**action, "action_id": "locale-stale"}, cookie, "widget-action")[1]["code"], "stale_widget")
+        current = self.state(cookie)["widgets"]["en"]
+        self.assertEqual(self.restaurant_request("actions", {**action, "widget_id": current["widget_id"], "revision": current["revision"], "action_id": "locale-stale-cart"}, cookie, "widget-action")[1]["code"], "action_id_conflict")
+        legacy = {**current, "actions": {key: value for key, value in current["actions"].items() if key != "locales"}}
+        with closing(sqlite3.connect(Path(self.directory.name) / "test.sqlite")) as connection, connection:
+            connection.execute("UPDATE widget_revisions SET envelope_json = ?, fingerprint = 'legacy-without-locales' WHERE widget_id = ? AND revision = ?", (json.dumps(legacy), current["widget_id"], current["revision"]))
+        legacy_action = {**action, "widget_id": current["widget_id"], "revision": current["revision"], "action_id": "locale-not-offered"}
+        self.assertEqual(self.restaurant_request("actions", legacy_action, cookie, "widget-action")[1]["code"], "disabled_action")
+        self.assertGreater(self.state(cookie)["widgets"]["en"]["revision"], current["revision"])
+
+    def test_confirmation_status_survives_cart_reversion_and_review_replacement(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        self.assertIsNone(self.state(cookie)["confirmation"])
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "status-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        before = self.state(cookie)
+        widget = before["widgets"]["en"]
+        action = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "status-review", "type": "checkout.start", "payload": {"cart_revision": cart["revision"]}}
+        _, first, _ = self.restaurant_request("actions", action, cookie, "widget-action")
+        issued = self.state(cookie)
+        self.assertEqual(issued["confirmation"], {"widget_id": first["widget_id"], "revision": 1, "sequence": first["sequence"], "active": True})
+        self.assertGreater(issued["state_revision"], before["state_revision"])
+        self.assertEqual(issued["cart"], before["cart"])
+        _, second, _ = self.restaurant_request("actions", {**action, "action_id": "status-replacement"}, cookie, "widget-action")
+        self.assertGreater(second["sequence"], first["sequence"])
+        self.assertFalse(self.confirmation_context(cookie, first, "en")["active"])
+        self.assertEqual(self.restaurant_request("actions", action, cookie, "widget-action")[1], first)
+        self.assertEqual(self.state(cookie)["confirmation"]["widget_id"], second["widget_id"])
+        confirm = {"widget_id": first["widget_id"], "revision": 1, "action_id": "status-old-confirm", "type": "order.confirm", "payload": {"cart_revision": cart["revision"]}}
+        self.assertEqual(self.restaurant_request("actions", confirm, cookie, "widget-action")[1]["code"], "stale_widget")
+        _, changed, _ = self.restaurant_request("cart/quantity", {"action_id": "status-up", "item_id": "hummus", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")
+        _, restored, _ = self.restaurant_request("cart/quantity", {"action_id": "status-down", "item_id": "hummus", "quantity": 1, "cart_revision": changed["revision"]}, cookie, "cart")
+        self.assertEqual(restored["revision"], cart["revision"])
+        status = self.state(cookie)
+        self.assertFalse(status["confirmation"]["active"])
+        self.assertGreater(status["state_revision"], issued["state_revision"])
+        self.assertEqual(status, self.snapshot(cookie))
+        self.assertIsNone(self.state(other)["confirmation"])
 
     def test_state_resync_is_scoped_ordered_and_matches_stream(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as missing:
