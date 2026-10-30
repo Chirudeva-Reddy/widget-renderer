@@ -2,22 +2,28 @@ import { StrictMode, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { validatePayload } from "./api";
-import type { Card, ValidationResult } from "./api";
+import type { Card, Node, ValidationResult } from "./api";
 import "./style.css";
 
 const examples: Record<string, string> = {
   welcome: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "Welcome! What would you like to order?" }, { type: "Text", value: "Choose from the menu to get started." }] }, null, 2),
+  menu: JSON.stringify({ type: "ListView", children: [{ type: "ListViewItem", children: [{ type: "Row", children: [{ type: "Text", value: "Hummus" }, { type: "Text", value: "$8.50" }] }] }, { type: "ListViewItem", children: [{ type: "Text", value: "Falafel" }] }] }, null, 2),
   arabic: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "مرحباً! ماذا تود أن تطلب؟" }] }, null, 2),
   partial: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "This item is available." }, { type: "Unknown" }, { type: "Text", value: "This item is available too." }] }, null, 2),
   broken: '{ "type": "Card", "children": [',
 };
 
+function PreviewNode({ node }: { node: Node }): ReactElement {
+  if (node.kind === "text") return <p className="widget-text" dir="auto">{node.value}</p>;
+  if (node.kind === "problem") return <p className="problem">{node.message}</p>;
+  return <div className={`widget-${node.kind}`}>
+    {node.children.length === 0 ? <p className="empty-card">This {node.kind === "list" ? "list" : "container"} is empty.</p>
+      : node.children.map((child, index) => <PreviewNode key={index} node={child} />)}
+  </div>;
+}
+
 function Preview({ card }: { card: Card }): ReactElement {
-  return <div className="preview-card">{card.children.length === 0
-    ? <p className="empty-card">This card is empty.</p>
-    : card.children.map((node, index) => node.kind === "text"
-      ? <p key={index} className="widget-text" dir="auto">{node.value}</p>
-      : <p key={index} className="problem">{node.message}</p>)}</div>;
+  return <PreviewNode node={card} />;
 }
 
 function App(): ReactElement {
@@ -56,11 +62,11 @@ function App(): ReactElement {
 
   return <main className="shell">
     <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><span className="badge">PLAYGROUND <span> / 01</span></span></header>
-    <section className="intro"><p className="eyebrow">VALIDATE &amp; PREVIEW</p><h1>See your widget<br /><em>come to life.</em></h1><p>Paste a widget payload to inspect how it renders. Supported for now: a Card with Text children.</p></section>
+    <section className="intro"><p className="eyebrow">VALIDATE &amp; PREVIEW</p><h1>See your widget<br /><em>come to life.</em></h1><p>Paste a widget payload to inspect how it renders. Supports Card, ListView, Row, Col and Text.</p></section>
     <div className="workspace">
       <form className="panel editor" onSubmit={(event) => { void submit(event); }}>
         <div className="panel-heading"><div><span className="step">01 / INPUT</span><h2>Widget payload</h2></div><span className="format">JSON</span></div>
-        <div className="example-row"><label htmlFor="example">Load an example</label><select id="example" defaultValue="welcome" onChange={(event) => setSource(examples[event.target.value])}><option value="welcome">Welcome card</option><option value="arabic">Arabic text</option><option value="partial">Unsupported child</option><option value="broken">Malformed JSON</option></select></div>
+        <div className="example-row"><label htmlFor="example">Load an example</label><select id="example" defaultValue="welcome" onChange={(event) => setSource(examples[event.target.value])}><option value="welcome">Welcome card</option><option value="menu">Nested menu</option><option value="arabic">Arabic text</option><option value="partial">Unsupported child</option><option value="broken">Malformed JSON</option></select></div>
         <label className="source-label" htmlFor="source">Payload source</label>
         <textarea id="source" spellCheck={false} value={source} onChange={(event) => setSource(event.target.value)} aria-describedby="source-help" />
         <div className="editor-footer"><span id="source-help">Maximum source size: 32 KiB</span><button type="submit">{pending ? "Validating…" : "Validate widget"}<span aria-hidden="true"> ↗</span></button></div>
