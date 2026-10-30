@@ -105,10 +105,10 @@ export async function fetchCart(): Promise<Cart> {
   const payload: unknown = await response.json();
   return cartSchema.parse(payload);
 }
-export async function updateCart(itemId: string, quantity: number, actionId: string): Promise<Cart> {
+export async function updateCart(itemId: string, quantity: number, actionId: string, cartRevision: string): Promise<Cart> {
   const response: Response = await fetch("/api/cart/quantity", {
     method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "cart" },
-    body: JSON.stringify({ item_id: itemId, quantity, action_id: actionId }),
+    body: JSON.stringify({ item_id: itemId, quantity, action_id: actionId, cart_revision: cartRevision }),
   });
   if (!response.ok) {
     const payload: unknown = await response.json();
@@ -124,6 +124,8 @@ const orderSchema = z.object({
   items: cartSchema.shape.items, total_minor: z.number().int().nonnegative(), currency: z.literal("AED"),
 }).strict();
 export type Order = z.infer<typeof orderSchema>;
+export class ConfirmationConflict extends Error {}
+
 export async function confirmOrder(actionId: string, cartRevision: string): Promise<Order> {
   const response: Response = await fetch("/api/orders/confirm", {
     method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "confirm" },
@@ -132,13 +134,15 @@ export async function confirmOrder(actionId: string, cartRevision: string): Prom
   if (!response.ok) {
     const payload: unknown = await response.json();
     const error = z.object({ message: z.string() }).safeParse(payload);
-    throw new Error(error.success ? error.data.message : `Confirmation failed (${response.status}).`);
+    const message: string = error.success ? error.data.message : `Confirmation failed (${response.status}).`;
+    if (response.status === 409) throw new ConfirmationConflict(message);
+    throw new Error(message);
   }
   const payload: unknown = await response.json();
   return orderSchema.parse(payload);
 }
 
-const snapshotSchema = z.object({ menu: menuSchema, cart: cartSchema }).strict();
+const snapshotSchema = z.object({ menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict() }).strict();
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export function parseSnapshot(source: string): Snapshot {
   const payload: unknown = JSON.parse(source);

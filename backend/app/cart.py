@@ -36,7 +36,11 @@ def initialize_cart(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)")
         connection.execute("CREATE TABLE IF NOT EXISTS cart_items (session_hash TEXT NOT NULL, item_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 99), PRIMARY KEY (session_hash, item_id), FOREIGN KEY (session_hash) REFERENCES sessions(token_hash), FOREIGN KEY (item_id) REFERENCES menu_items(id))")
-        connection.execute("CREATE TABLE IF NOT EXISTS cart_actions (session_hash TEXT NOT NULL, action_id TEXT NOT NULL, item_id TEXT NOT NULL, quantity INTEGER NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY (session_hash, action_id))")
+        connection.execute("CREATE TABLE IF NOT EXISTS cart_actions (session_hash TEXT NOT NULL, action_id TEXT NOT NULL, item_id TEXT NOT NULL, quantity INTEGER NOT NULL, result_json TEXT NOT NULL, cart_revision TEXT NOT NULL, PRIMARY KEY (session_hash, action_id))")
+
+        columns: set[str] = {row[1] for row in connection.execute("PRAGMA table_info(cart_actions)").fetchall()}
+        if "cart_revision" not in columns:
+            connection.execute("ALTER TABLE cart_actions ADD COLUMN cart_revision TEXT NOT NULL DEFAULT ''")
 
 
 def token_hash(token: str) -> str:
@@ -72,17 +76,19 @@ def get_cart(path: Path, token: str) -> Cart:
         return read_cart(connection, session_hash)
 
 
-def set_quantity(path: Path, token: str, action_id: str, item_id: str, quantity: int) -> Cart:
+def set_quantity(path: Path, token: str, action_id: str, item_id: str, quantity: int, cart_revision: str) -> Cart:
     with sqlite3.connect(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         session_hash: str = require_session(connection, token)
         if connection.execute("SELECT 1 FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone() is not None:
             raise CartError("Action ID was already used for a different request.")
-        previous = connection.execute("SELECT item_id, quantity, result_json FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
+        previous = connection.execute("SELECT item_id, quantity, result_json, cart_revision FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
         if previous is not None:
-            if previous[:2] != (item_id, quantity):
+            if previous[:2] != (item_id, quantity) or previous[3] != cart_revision:
                 raise CartError("Action ID was already used for a different request.")
             return cast(Cart, json.loads(previous[2]))
+        if read_cart(connection, session_hash)["revision"] != cart_revision:
+            raise CartError("Your cart changed. Review the updated cart and try again.")
         item = connection.execute("SELECT available FROM menu_items WHERE id = ?", (item_id,)).fetchone()
         if item is None:
             raise CartError("Menu item does not exist.")
@@ -95,7 +101,7 @@ def set_quantity(path: Path, token: str, action_id: str, item_id: str, quantity:
         else:
             connection.execute("INSERT INTO cart_items (session_hash, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(session_hash, item_id) DO UPDATE SET quantity = excluded.quantity", (session_hash, item_id, quantity))
         result: Cart = read_cart(connection, session_hash)
-        connection.execute("INSERT INTO cart_actions (session_hash, action_id, item_id, quantity, result_json) VALUES (?, ?, ?, ?, ?)", (session_hash, action_id, item_id, quantity, json.dumps(result, ensure_ascii=False)))
+        connection.execute("INSERT INTO cart_actions (session_hash, action_id, item_id, quantity, result_json, cart_revision) VALUES (?, ?, ?, ?, ?, ?)", (session_hash, action_id, item_id, quantity, json.dumps(result, ensure_ascii=False), cart_revision))
         return result
 
 

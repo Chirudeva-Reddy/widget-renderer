@@ -48,6 +48,7 @@ class CartQuantityRequest(BaseModel):
     action_id: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     quantity: int = Field(ge=0, le=99)
+    cart_revision: str = Field(min_length=64, max_length=64)
 
 
 @app.post("/api/session", response_model=None)
@@ -59,7 +60,7 @@ def session(request: Request) -> JSONResponse:
         try:
             return JSONResponse(content=get_cart(DATABASE_PATH, token))
         except SessionError:
-            return error_response(401, "session_expired", "Your session has expired. Clear the session cookie and try again.")
+            token = ""
     token = create_session(DATABASE_PATH)
     response: JSONResponse = JSONResponse(content=get_cart(DATABASE_PATH, token))
     response.set_cookie("restaurant_session", token, httponly=True, samesite="strict", secure=False, max_age=86400, path="/")
@@ -79,7 +80,7 @@ def cart_quantity(payload: CartQuantityRequest, request: Request) -> JSONRespons
     if not is_local_demo_request(request, "cart"):
         return error_response(403, "invalid_origin", "Cart changes require the local application.")
     try:
-        return JSONResponse(content=set_quantity(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.action_id, payload.item_id, payload.quantity))
+        return JSONResponse(content=set_quantity(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.action_id, payload.item_id, payload.quantity, payload.cart_revision))
     except SessionError:
         return error_response(401, "session_required", "Start a session to access your cart.")
     except CartError as error:

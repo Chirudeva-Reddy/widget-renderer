@@ -4,12 +4,15 @@ from pathlib import Path
 from typing import TypedDict
 
 from app.cart import Cart, read_cart, require_session
+from app.menu_widget import build_menu_widget
+from app.validator import ContainerNode
 from app.menu import MenuResponse, read_menu
 
 
 class Snapshot(TypedDict):
     menu: MenuResponse
     cart: Cart
+    menu_widgets: dict[str, ContainerNode]
 
 
 def read_snapshot(path: Path, token: str) -> Snapshot:
@@ -18,4 +21,4 @@ def read_snapshot(path: Path, token: str) -> Snapshot:
         session_hash: str = require_session(connection, token)
         menu: MenuResponse = read_menu(connection)
         cart: Cart = read_cart(connection, session_hash)
-        return {"menu": menu, "cart": cart}
+        return {"menu": menu, "cart": cart, "menu_widgets": {locale: build_menu_widget(menu, locale) for locale in ("en", "ar")}}

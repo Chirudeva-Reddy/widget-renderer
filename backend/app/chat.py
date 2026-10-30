@@ -93,7 +93,23 @@ def provider_settings() -> tuple[str, str]:
     return key, model
 
 
-async def ask_provider(text: str, context: str, locale: Literal["en", "ar"]) -> ModelReply:
+class ProviderMessage(TypedDict):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+def read_history(path: Path, token: str) -> list[ProviderMessage]:
+    """Return the latest 20 completed turns in conversation order for this session."""
+    with sqlite3.connect(path) as connection:
+        session_hash: str = require_session(connection, token)
+        rows = connection.execute("SELECT text, result_json FROM chat_turns WHERE session_hash = ? AND status = 'complete' ORDER BY rowid DESC LIMIT 20", (session_hash,)).fetchall()
+        messages: list[ProviderMessage] = []
+        for text, result_json in reversed(rows):
+            messages.extend([{"role": "user", "content": text}, {"role": "assistant", "content": result_json}])
+        return messages
+
+
+async def ask_provider(text: str, context: str, locale: Literal["en", "ar"], history: list[ProviderMessage]) -> ModelReply:
     key, model = provider_settings()
     prompt: str = (f"You are a restaurant assistant. Respond in {'English' if locale == 'en' else 'Arabic'} only, regardless of the language in the menu data. The menu and cart are authoritative. "
         "Return JSON with text, suggestion and show_menu. Set show_menu true whenever the customer asks to see the menu or available dishes; the app will display the menu, so keep the text brief. suggestion is null unless the customer explicitly asks to change "
@@ -104,7 +120,7 @@ async def ask_provider(text: str, context: str, locale: Literal["en", "ar"]) -> 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for attempt in range(2):
             try:
-                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": model, "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": f"Visible menu and cart data: {context}\nCustomer message: {text}"}], "response_format": {"type": "json_schema", "json_schema": {"name": "restaurant_reply", "strict": True, "schema": ModelReply.model_json_schema()}}, "provider": {"require_parameters": True}, "max_tokens": 400})
+                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": model, "messages": [{"role": "system", "content": prompt}, *history, {"role": "user", "content": f"Visible menu and cart data: {context}\nCustomer message: {text}"}], "response_format": {"type": "json_schema", "json_schema": {"name": "restaurant_reply", "strict": True, "schema": ModelReply.model_json_schema()}}, "provider": {"require_parameters": True}, "max_tokens": 400})
                 response.raise_for_status()
                 content: str = response.json()["choices"][0]["message"]["content"]
                 return ModelReply.model_validate_json(content)
@@ -135,7 +151,8 @@ async def respond(path: Path, token: str, message_id: str, text: str, menu_revis
             raise ChatError("The menu changed. Wait for it to refresh and send your message again.")
         localized_menu = [{"id": item["id"], "position": item["position"], "name": item["name"][locale], "price_minor": item["price_minor"], "currency": item["currency"], "available": item["available"]} for item in snapshot["menu"]["items"]]
         localized_cart = [{"id": item["id"], "name": item["name_en"] if locale == "en" else item["name_ar"], "quantity": item["quantity"], "available": item["available"]} for item in snapshot["cart"]["items"]]
-        reply: ModelReply = await ask_provider(text, json.dumps({"menu": localized_menu, "cart": localized_cart}, ensure_ascii=False), locale)
+        history: list[ProviderMessage] = await asyncio.to_thread(read_history, path, token)
+        reply: ModelReply = await ask_provider(text, json.dumps({"menu": localized_menu, "cart": localized_cart}, ensure_ascii=False), locale, history)
         suggestion: dict[str, str | int] | None = None
         if reply.suggestion is not None:
             item = next((item for item in snapshot["menu"]["items"] if item["id"] == reply.suggestion.item_id), None)

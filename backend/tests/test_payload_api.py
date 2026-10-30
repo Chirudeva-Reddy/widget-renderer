@@ -7,6 +7,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,53 @@ class PayloadApiTests(unittest.TestCase):
 
     def validate(self, source: str) -> tuple[int, dict[str, Any]]:
         return self.request(json.dumps({"source": source}).encode(), "application/json")
+
+    def restaurant_request(self, endpoint: str, payload: dict[str, Any], cookie: str, action: str) -> tuple[int, dict[str, Any], str]:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/{endpoint}", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Origin": "http://localhost:5173", "X-Demo-Action": action, "Cookie": cookie}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.load(response), response.headers.get("Set-Cookie", "").split(";", 1)[0]
+        except urllib.error.HTTPError as error:
+            return error.code, json.load(error), ""
+
+    def test_concurrent_quantity_changes_reject_stale_cart(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/menu") as response:
+            item_id: str = json.load(response)["items"][0]["id"]
+        requests = [{"action_id": action_id, "item_id": item_id, "quantity": 1, "cart_revision": cart["revision"]} for action_id in ("tab-one", "tab-two")]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda payload: self.restaurant_request("cart/quantity", payload, cookie, "cart"), requests))
+        self.assertEqual(sorted(result[0] for result in results), [200, 409])
+        winner: int = next(index for index, result in enumerate(results) if result[0] == 200)
+        updated = results[winner][1]
+        self.assertEqual(self.restaurant_request("cart/quantity", requests[winner], cookie, "cart")[1], updated)
+        reviewed = {**requests[1 - winner], "quantity": 2, "cart_revision": updated["revision"]}
+        status, cart, _ = self.restaurant_request("cart/quantity", reviewed, cookie, "cart")
+        self.assertEqual((status, cart["items"][0]["quantity"]), (200, 2))
+
+    def test_confirmation_retry_recovers_result_after_cart_empties(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/menu") as response:
+            item_id: str = json.load(response)["items"][0]["id"]
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "add", "item_id": item_id, "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        attempt = {"action_id": "confirm", "cart_revision": cart["revision"]}
+        status, original, _ = self.restaurant_request("orders/confirm", attempt, cookie, "confirm")
+        self.assertEqual(status, 200)
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/cart", headers={"Cookie": cookie})
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(json.load(response)["items"], [])
+        status, recovered, _ = self.restaurant_request("orders/confirm", attempt, cookie, "confirm")
+        self.assertEqual((status, recovered), (200, original))
+
+    def test_invalid_session_cookie_is_replaced(self) -> None:
+        status, cart, cookie = self.restaurant_request("session", {}, "restaurant_session=expired", "session")
+        self.assertEqual(status, 200)
+        self.assertTrue(cookie.startswith("restaurant_session="))
+        self.assertNotEqual(cookie, "restaurant_session=expired")
+        self.assertEqual(cart["items"], [])
 
     def test_valid_card_and_nested_list_render_plans(self) -> None:
         for source, expected_kind in [
