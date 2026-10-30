@@ -2,7 +2,7 @@ import { Component, StrictMode, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
-import { acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, fetchState, parseSnapshot, readSnapshotRevision, restockItem, sellOutItem, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
+import { acknowledgeConfirmation, acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, fetchState, parseSnapshot, readSnapshotRevision, restockItem, sellOutItem, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
 import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult, WidgetEnvelope, CheckoutView } from "./api";
 import { Chart } from "./Chart";
 import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
@@ -71,6 +71,14 @@ type DisplayedMenu = { menu: Menu; widgets: { en: Card; ar: Card }; ids: { en: s
 
 type ChatMessage = { role: "user"; text: string } | { role: "assistant"; text: string; suggestion: ChatReply["suggestion"]; menuRevision: number; cartRevision: string; widget: Card | null; locale: "en" | "ar"; streaming?: { index: number; node: Node }[]; incomplete?: boolean };
 
+// The backend keeps one menu widget per session (new revisions, same widget_id), so a repeat menu reply edits the first menu bubble instead of stacking a stale copy.
+function editMenuInPlace(messages: ChatMessage[]): ChatMessage[] {
+  const last: ChatMessage | undefined = messages[messages.length - 1];
+  const first: number = messages.findIndex((message) => message.role === "assistant" && message.widget?.kind === "list");
+  if (last?.role !== "assistant" || last.widget?.kind !== "list" || first === messages.length - 1) return messages;
+  return messages.map((message, index) => index === first && message.role === "assistant" ? { ...message, widget: last.widget, locale: last.locale, menuRevision: last.menuRevision, cartRevision: last.cartRevision } : index === messages.length - 1 ? { ...last, widget: null } : message);
+}
+
 function App(): ReactElement {
   const [source, setSource] = useState<string>(examples.welcome);
   const [card, setCard] = useState<Card | null>(null);
@@ -107,7 +115,7 @@ function App(): ReactElement {
       const renderedViewId: string | null = activeView === null ? null : activeView.ids[chatLocale];
       const menuRevision: number = activeView === null ? menu.revision : activeView.menu.revision;
       const envelope: WidgetEnvelope | null = activeView === null ? null : activeView.envelopes[chatLocale];
-      const reply: ChatReply = await streamChat(text, menuRevision, crypto.randomUUID(), chatLocale, renderedViewId, envelope === null ? null : { widget_id: envelope.widget_id, revision: envelope.revision }, (event) => {
+      const reply: ChatReply = await streamChat(text, menuRevision, crypto.randomUUID(), chatLocale, renderedViewId, envelope === null ? null : { widget_id: envelope.widget_id, revision: envelope.revision }, checkoutView === null || confirmation !== null || order !== null ? null : { widget_id: checkoutView.widget_id, revision: checkoutView.revision }, (event) => {
         if (event.type === "card") {
           streamed = true;
           setChatMessages((messages: ChatMessage[]) => [...messages, { role: "assistant", text: event.text ?? "", suggestion: null, menuRevision, cartRevision: "", widget: null, locale: chatLocale, streaming: [] }]);
@@ -116,7 +124,7 @@ function App(): ReactElement {
         }
       });
       const final: ChatMessage = { role: "assistant", text: reply.text, suggestion: reply.suggestion, menuRevision: reply.menu_revision, cartRevision: reply.cart_revision, widget: reply.widget, locale: reply.locale };
-      setChatMessages((messages: ChatMessage[]) => streamed ? [...messages.slice(0, -1), final] : [...messages, final]);
+      setChatMessages((messages: ChatMessage[]) => editMenuInPlace(streamed ? [...messages.slice(0, -1), final] : [...messages, final]));
     } catch (error: unknown) {
       if (streamed) setChatMessages((messages: ChatMessage[]) => messages.map((entry, index) => index === messages.length - 1 && entry.role === "assistant" ? { ...entry, incomplete: true } : entry));
       setChatText(text);
@@ -151,6 +159,7 @@ function App(): ReactElement {
   async function reviewOrder(): Promise<void> {
     if (cart === null || displayedMenu === null || !live || pendingChanges.current > 0 || confirmation !== null || Object.keys(quantityEdits).length > 0 || cart.items.length === 0) return;
     const envelope: WidgetEnvelope = displayedMenu.envelopes[chatLocale];
+    if (!envelope.actions.checkout) return;
     pendingChanges.current += 1;
     setLive(false);
     setCartPending(true);
@@ -466,6 +475,18 @@ function App(): ReactElement {
     });
     return () => { active = false; };
   }, [activeEnvelope?.widget_id, activeEnvelope?.revision]);
+
+  useEffect(() => {
+    if (checkoutView === null || confirmation !== null || order !== null) return;
+    let active: boolean = true;
+    void acknowledgeConfirmation(checkoutView, chatLocale).catch((error: unknown) => {
+      if (active) {
+        setCheckoutInvalidated(true);
+        setCartError(error instanceof Error ? error.message : "Confirmation acknowledgement failed. Review your cart again.");
+      }
+    });
+    return () => { active = false; };
+  }, [checkoutView?.widget_id, checkoutView?.revision, chatLocale, confirmation, order]);
 
   return <main className="shell">
     <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><span className="badge">PLAYGROUND <span> / 01</span></span></header>

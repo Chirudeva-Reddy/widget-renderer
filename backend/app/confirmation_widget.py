@@ -1,8 +1,72 @@
 import json
-from typing import Literal
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+from typing import Literal, TypedDict, cast
 
-from app.cart import Cart
+from app.cart import Cart, read_cart, require_session
 from app.validator import ContainerNode, validate_source
+
+
+class ConfirmationViewError(ValueError):
+    pass
+
+
+class ConfirmationPayloads(TypedDict):
+    en: ContainerNode
+    ar: ContainerNode
+
+
+class ConfirmationActionBinding(TypedDict):
+    type: Literal["order.confirm", "order.edit"]
+    enabled: bool
+
+
+class CheckoutView(TypedDict):
+    kind: Literal["widget"]
+    role: Literal["confirmation"]
+    payload: ConfirmationPayloads
+    actions: list[ConfirmationActionBinding]
+    cart_revision: str
+    widget_id: str
+    revision: int
+    cart: Cart
+
+
+class ConfirmationReference(TypedDict):
+    widget_id: str
+    revision: int
+
+
+def read_confirmation_view(connection: sqlite3.Connection, session_hash: str, reference: ConfirmationReference) -> CheckoutView:
+    """Resolve only a confirmation envelope issued to this session."""
+    row: tuple[str | None] | None = connection.execute("SELECT envelope_json FROM checkout_views WHERE id = ? AND session_hash = ?", (reference["widget_id"], session_hash)).fetchone()
+    if row is None or row[0] is None or reference["revision"] != 1:
+        raise ConfirmationViewError("Confirmation revision was not issued to this session. Review your cart again.")
+    return cast(CheckoutView, json.loads(row[0]))
+
+
+def acknowledge_confirmation(path: Path, token: str, reference: ConfirmationReference, locale: Literal["en", "ar"]) -> CheckoutView:
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        session_hash: str = require_session(connection, token)
+        view: CheckoutView = read_confirmation_view(connection, session_hash, reference)
+        connection.execute("INSERT INTO confirmation_acknowledgements (widget_id, locale, revision) VALUES (?, ?, ?) ON CONFLICT(widget_id, locale) DO UPDATE SET revision = MAX(revision, excluded.revision)", (reference["widget_id"], locale, reference["revision"]))
+        return view
+
+
+class ConfirmationContext(TypedDict):
+    widget: CheckoutView
+    active: bool
+    acknowledged: bool
+    locale: Literal["en", "ar"]
+
+
+def read_confirmation_context(connection: sqlite3.Connection, session_hash: str, reference: ConfirmationReference, locale: Literal["en", "ar"]) -> ConfirmationContext:
+    view: CheckoutView = read_confirmation_view(connection, session_hash, reference)
+    consumed: tuple[int] = connection.execute("SELECT consumed FROM checkout_views WHERE id = ? AND session_hash = ?", (reference["widget_id"], session_hash)).fetchone()
+    acknowledged: bool = connection.execute("SELECT 1 FROM confirmation_acknowledgements WHERE widget_id = ? AND locale = ? AND revision = ?", (reference["widget_id"], locale, reference["revision"])).fetchone() is not None
+    return {"widget": view, "active": consumed[0] == 0 and read_cart(connection, session_hash)["revision"] == view["cart_revision"], "acknowledged": acknowledged, "locale": locale}
 
 
 def build_confirmation_widget(cart: Cart, locale: Literal["en", "ar"]) -> ContainerNode:

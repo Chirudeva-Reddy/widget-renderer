@@ -3,12 +3,11 @@ import secrets
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import TypedDict, cast
 
 from app.cart import Cart, Order, confirm_session_order, read_cart, require_session, set_session_quantity
-from app.confirmation_widget import build_confirmation_widget
+from app.confirmation_widget import CheckoutView, build_confirmation_widget, read_confirmation_view
 from app.menu import read_menu
-from app.validator import ContainerNode
 from app.widgets import WidgetEnvelope
 
 
@@ -30,6 +29,10 @@ class WidgetActionError(ValueError):
 def initialize_widget_actions(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE IF NOT EXISTS checkout_views (id TEXT PRIMARY KEY, session_hash TEXT NOT NULL, cart_revision TEXT NOT NULL, cart_json TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)")
+        columns: set[str] = {row[1] for row in connection.execute("PRAGMA table_info(checkout_views)").fetchall()}
+        if "envelope_json" not in columns:
+            connection.execute("ALTER TABLE checkout_views ADD COLUMN envelope_json TEXT")
+        connection.execute("CREATE TABLE IF NOT EXISTS confirmation_acknowledgements (widget_id TEXT NOT NULL, locale TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(widget_id, locale))")
         connection.execute("CREATE TABLE IF NOT EXISTS widget_actions (session_hash TEXT NOT NULL, action_id TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(session_hash, action_id))")
 
 
@@ -52,7 +55,7 @@ def apply_widget_quantity(path: Path, token: str, action: QuantityAction) -> Car
         envelope: WidgetEnvelope = cast(WidgetEnvelope, json.loads(row[1]))
         if read_menu(connection)["revision"] != envelope["menu"]["revision"] or read_cart(connection, session_hash)["revision"] != envelope["cart_revision"] or action["cart_revision"] != envelope["cart_revision"]:
             raise WidgetActionError("Widget is out of date. Refresh the menu and try again.")
-        if not any(item["id"] == action["item_id"] and item["position"] == action["position"] for item in envelope["menu"]["items"]):
+        if not any(binding["item_id"] == action["item_id"] and binding["position"] == action["position"] and binding["minimum"] <= action["quantity"] <= binding["maximum"] for binding in envelope["actions"]["quantities"]):
             raise WidgetActionError("The selected item does not match this widget. Refresh the menu and try again.")
         result: Cart = set_session_quantity(connection, session_hash, action["action_id"], action["item_id"], action["quantity"], action["cart_revision"])
         connection.execute("INSERT INTO widget_actions (session_hash, action_id, request_json, result_json) VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request_json, json.dumps(result, ensure_ascii=False)))
@@ -65,21 +68,6 @@ class CheckoutAction(TypedDict):
     action_id: str
     type: str
     cart_revision: str
-
-
-class ConfirmationPayloads(TypedDict):
-    en: ContainerNode
-    ar: ContainerNode
-
-
-class CheckoutView(TypedDict):
-    kind: Literal["widget"]
-    role: Literal["confirmation"]
-    payload: ConfirmationPayloads
-    cart_revision: str
-    widget_id: str
-    revision: int
-    cart: Cart
 
 
 def start_checkout(path: Path, token: str, action: CheckoutAction) -> CheckoutView:
@@ -101,10 +89,10 @@ def start_checkout(path: Path, token: str, action: CheckoutAction) -> CheckoutVi
         cart: Cart = read_cart(connection, session_hash)
         if read_menu(connection)["revision"] != envelope["menu"]["revision"] or cart["revision"] != envelope["cart_revision"] or cart["revision"] != action["cart_revision"]:
             raise WidgetActionError("Widget is out of date. Refresh the menu and try again.")
-        if not cart["items"]:
+        if not envelope["actions"]["checkout"]:
             raise WidgetActionError("Your cart is empty. Add an item before reviewing.")
-        view: CheckoutView = {"kind": "widget", "role": "confirmation", "widget_id": secrets.token_urlsafe(24), "revision": 1, "cart_revision": cart["revision"], "cart": cart, "payload": {"en": build_confirmation_widget(cart, "en"), "ar": build_confirmation_widget(cart, "ar")}}
-        connection.execute("INSERT INTO checkout_views (id, session_hash, cart_revision, cart_json) VALUES (?, ?, ?, ?)", (view["widget_id"], session_hash, cart["revision"], json.dumps(cart, ensure_ascii=False)))
+        view: CheckoutView = {"kind": "widget", "role": "confirmation", "widget_id": secrets.token_urlsafe(24), "revision": 1, "actions": [{"type": "order.edit", "enabled": True}, {"type": "order.confirm", "enabled": cart["can_checkout"]}], "cart_revision": cart["revision"], "cart": cart, "payload": {"en": build_confirmation_widget(cart, "en"), "ar": build_confirmation_widget(cart, "ar")}}
+        connection.execute("INSERT INTO checkout_views (id, session_hash, cart_revision, cart_json, envelope_json) VALUES (?, ?, ?, ?, ?)", (view["widget_id"], session_hash, cart["revision"], json.dumps(cart, ensure_ascii=False), json.dumps(view, ensure_ascii=False)))
         connection.execute("INSERT INTO widget_actions VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request, json.dumps(view, ensure_ascii=False)))
         return view
 
@@ -124,6 +112,9 @@ def confirm_widget_order(path: Path, token: str, action: CheckoutAction) -> Orde
             raise WidgetActionError("The reviewed order is unknown or does not match. Review your cart again.")
         if connection.execute("SELECT 1 FROM cart_actions WHERE session_hash = ? AND action_id = ? UNION ALL SELECT 1 FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action["action_id"], session_hash, action["action_id"])).fetchone() is not None:
             raise WidgetActionError("Action ID was already used for a different request.")
+        view: CheckoutView = read_confirmation_view(connection, session_hash, {"widget_id": action["widget_id"], "revision": action["revision"]})
+        if not any(binding["type"] == "order.confirm" and binding["enabled"] for binding in view["actions"]):
+            raise WidgetActionError("This confirmation control was disabled. Review your cart again.")
         order: Order = confirm_session_order(connection, session_hash, action["action_id"], action["cart_revision"])
         connection.execute("INSERT INTO widget_actions VALUES (?, ?, ?, ?)", (session_hash, action["action_id"], request, json.dumps(order, ensure_ascii=False)))
         return order

@@ -15,8 +15,21 @@ class WidgetError(ValueError):
     pass
 
 
+class QuantityBinding(TypedDict):
+    item_id: str
+    position: int
+    minimum: int
+    maximum: int
+
+
+class MenuActions(TypedDict):
+    quantities: list[QuantityBinding]
+    checkout: bool
+
+
 class WidgetEnvelope(TypedDict):
     kind: Literal["widget"]
+    actions: MenuActions
     widget_id: str
     revision: int
     locale: Literal["en", "ar"]
@@ -42,12 +55,13 @@ def issue_widget(connection: sqlite3.Connection, session_hash: str, locale: Lite
     if row is None:
         connection.execute("INSERT INTO widgets (id, session_hash, locale) VALUES (?, ?, ?)", (widget_id, session_hash, locale))
     cart_revision: str = cart["revision"]
-    fingerprint: str = hashlib.sha256(json.dumps({"payload": payload, "menu_view_id": view_id, "cart_revision": cart_revision, "menu": menu, "cart": cart}, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    actions: MenuActions = {"quantities": [{"item_id": item["id"], "position": item["position"], "minimum": 0, "maximum": 99 if item["available"] else next((entry["quantity"] for entry in cart["items"] if entry["id"] == item["id"]), 0)} for item in menu["items"]], "checkout": bool(cart["items"])}
+    fingerprint: str = hashlib.sha256(json.dumps({"actions": actions, "payload": payload, "menu_view_id": view_id, "cart_revision": cart_revision, "menu": menu, "cart": cart}, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     latest: tuple[int, str, str] | None = connection.execute("SELECT revision, fingerprint, envelope_json FROM widget_revisions WHERE widget_id = ? ORDER BY revision DESC LIMIT 1", (widget_id,)).fetchone()
     if latest is not None and latest[1] == fingerprint:
         return cast(WidgetEnvelope, json.loads(latest[2]))
     revision: int = 1 if latest is None else latest[0] + 1
-    envelope: WidgetEnvelope = {"kind": "widget", "widget_id": widget_id, "revision": revision, "locale": locale, "payload": payload, "menu_view_id": view_id, "cart_revision": cart_revision, "menu": menu, "cart": cart}
+    envelope: WidgetEnvelope = {"kind": "widget", "actions": actions, "widget_id": widget_id, "revision": revision, "locale": locale, "payload": payload, "menu_view_id": view_id, "cart_revision": cart_revision, "menu": menu, "cart": cart}
     connection.execute("INSERT INTO widget_revisions (widget_id, revision, fingerprint, envelope_json) VALUES (?, ?, ?, ?)", (widget_id, revision, fingerprint, json.dumps(envelope, ensure_ascii=False)))
     return envelope
 
