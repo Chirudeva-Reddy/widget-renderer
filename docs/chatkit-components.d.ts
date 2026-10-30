@@ -206,6 +206,8 @@ type TextProps = {
   size?: TextSize
   // * Font weight; accepts a font weight token. * @default "normal"
   weight?: "normal" | "medium" | "semibold" | "bold"
+  // * Text color; accepts text color token, a primitive color token, a CSS string, or theme-aware `{ light, dark }`. (Missing from the studio scrape; present on chatkit-python `Text`.)
+  color?: string | ThemeColor
   // * Enables streaming-friendly transitions for incremental updates. * **Important:** Once incremental updates are complete, this should be set to `false`. * **Note:** Streaming animations are not currently implemented for basic text components, but we plan to add them in the future. This prop is here as a way to opt-in to streaming animations for Text components once they are implemented. * @default false
   streaming?: boolean
   // Render text in italic style.

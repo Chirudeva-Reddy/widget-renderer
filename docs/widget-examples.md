@@ -150,7 +150,19 @@ The state is the editor's saved copy, so the subtotal differs from `defaultState
           "onClickAction": { "type": "cart.add", "payload": { "id": "shawarma", "position": 1, "version": 4 }, "handler": "server", "loadingBehavior": "self" } }
       ]}
     ]},
-    { "type": "ListViewItem", "key": "falafel", "...": "same shape, position 2, qty 2, $7.00" },
+    { "type": "ListViewItem", "key": "falafel", "align": "center", "gap": 3, "children": [
+      { "type": "Col", "gap": 1, "flex": 1, "children": [
+        { "type": "Text", "value": "Falafel Plate", "size": "sm", "weight": "semibold", "color": "prose" },
+        { "type": "Row", "gap": 2, "align": "center", "children": [ { "type": "Caption", "value": "$7.00" } ] }
+      ]},
+      { "type": "Row", "gap": 1, "align": "center", "children": [
+        { "type": "Button", "label": "−", "size": "sm", "variant": "outline", "disabled": false,
+          "onClickAction": { "type": "cart.remove", "payload": { "id": "falafel", "position": 2, "version": 4 }, "handler": "server", "loadingBehavior": "self" } },
+        { "type": "Badge", "label": "2", "variant": "outline" },
+        { "type": "Button", "label": "+", "size": "sm", "style": "primary", "disabled": false,
+          "onClickAction": { "type": "cart.add", "payload": { "id": "falafel", "position": 2, "version": 4 }, "handler": "server", "loadingBehavior": "self" } }
+      ]}
+    ]},
     { "type": "ListViewItem", "key": "tabbouleh", "align": "center", "gap": 3, "children": [
       { "type": "Col", "gap": 1, "flex": 1, "children": [
         { "type": "Text", "value": "Tabbouleh", "size": "sm", "weight": "semibold", "color": "tertiary" },
@@ -272,8 +284,16 @@ All of these have `"size": "lg"` on the root Card. The gallery forces that for d
       { "type": "Col", "children": [
         { "type": "Text", "value": "Black Sugar Hoick Latte", "size": "md", "weight": "semibold", "color": "emphasis" },
         { "type": "Text", "value": "16oz Iced · Boba · $6.50", "size": "sm", "color": "secondary" } ] } ] },
-    { "type": "Row", "key": "Classic Milk Tea", "...": "same shape" },
-    { "type": "Row", "key": "Matcha Latte", "...": "same shape" } ] },
+    { "type": "Row", "key": "Classic Milk Tea", "align": "center", "children": [
+      { "type": "Image", "src": "https://cdn.openai.com/API/storybook/milktea.png", "size": 48 },
+      { "type": "Col", "children": [
+        { "type": "Text", "value": "Classic Milk Tea", "size": "md", "weight": "semibold", "color": "emphasis" },
+        { "type": "Text", "value": "16oz Iced · Boba · $5.50", "size": "sm", "color": "secondary" } ] } ] },
+    { "type": "Row", "key": "Matcha Latte", "align": "center", "children": [
+      { "type": "Image", "src": "https://cdn.openai.com/API/storybook/matcha.png", "size": 48 },
+      { "type": "Col", "children": [
+        { "type": "Text", "value": "Matcha Latte", "size": "md", "weight": "semibold", "color": "emphasis" },
+        { "type": "Text", "value": "16oz Iced · Oat milk · $6.00", "size": "sm", "color": "secondary" } ] } ] } ] },
   { "type": "Divider", "flush": true },
   { "type": "Col", "children": [
     { "type": "Row", "children": [ { "type": "Text", "value": "Subtotal", "size": "sm" }, { "type": "Spacer" }, { "type": "Text", "value": "$19.75", "size": "sm" } ] },

@@ -14,6 +14,7 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.cart import CompletedAction, read_completed_actions, require_session
+from app.confirmation_widget import ConfirmationContext, ConfirmationReference, ConfirmationViewError, read_confirmation_context, read_confirmation_view
 from app.events import Snapshot, read_session_snapshot
 from app.menu import MenuResponse
 from app.menu_views import MenuViewError, get_menu_view, read_menu_view
@@ -73,6 +74,8 @@ def initialize_chat(path: Path) -> None:
         if "action_sequence" not in columns:
             connection.execute("ALTER TABLE chat_turns ADD COLUMN action_sequence INTEGER")
             connection.execute("UPDATE chat_turns SET action_sequence = -1 WHERE status = 'complete'")
+        if "confirmation_view" not in columns:
+            connection.execute("ALTER TABLE chat_turns ADD COLUMN confirmation_view TEXT")
         if "widget_view" not in columns:
             connection.execute("ALTER TABLE chat_turns ADD COLUMN widget_view TEXT")
         if "rendered_view_id" not in columns:
@@ -96,22 +99,25 @@ def get_widget_view(path: Path, token: str, reference: dict[str, str | int], loc
         return read_widget_view(connection, require_session(connection, token), reference, locale, menu_revision, rendered_view_id)
 
 
-def begin_turn(path: Path, token: str, message_id: str, text: str, menu_revision: int, locale: Literal["en", "ar"], rendered_view_id: str | None, widget_view: dict[str, str | int] | None) -> ChatReply | None:
+def begin_turn(path: Path, token: str, message_id: str, text: str, menu_revision: int, locale: Literal["en", "ar"], rendered_view_id: str | None, widget_view: dict[str, str | int] | None, confirmation_view: ConfirmationReference | None) -> ChatReply | None:
     with sqlite3.connect(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         session_hash: str = require_session(connection, token)
         read_menu_view(connection, session_hash, rendered_view_id, menu_revision, locale)
         if widget_view is not None:
             read_widget_view(connection, session_hash, widget_view, locale, menu_revision, rendered_view_id)
+        if confirmation_view is not None:
+            read_confirmation_view(connection, session_hash, confirmation_view)
+        confirmation_json: str | None = None if confirmation_view is None else json.dumps(confirmation_view, sort_keys=True)
         widget_json: str | None = None if widget_view is None else json.dumps(widget_view, sort_keys=True)
-        existing = connection.execute("SELECT text, menu_revision, status, result_json, locale, rendered_view_id, widget_view FROM chat_turns WHERE session_hash = ? AND message_id = ?", (session_hash, message_id)).fetchone()
+        existing = connection.execute("SELECT text, menu_revision, status, result_json, locale, rendered_view_id, widget_view, confirmation_view FROM chat_turns WHERE session_hash = ? AND message_id = ?", (session_hash, message_id)).fetchone()
         if existing is not None:
-            if existing[0] != text or existing[1] != menu_revision or existing[4] != locale or existing[5] != rendered_view_id or existing[6] != widget_json:
+            if existing[0] != text or existing[1] != menu_revision or existing[4] != locale or existing[5] != rendered_view_id or existing[6] != widget_json or existing[7] != confirmation_json:
                 raise ChatError("Message ID was already used for a different request.")
             if existing[2] == "complete":
                 return cast(ChatReply, json.loads(existing[3]))
             raise ChatError("This message is already being processed or failed. Send a new message to retry.")
-        connection.execute("INSERT INTO chat_turns (session_hash, message_id, text, menu_revision, status, locale, rendered_view_id, widget_view) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)", (session_hash, message_id, text, menu_revision, locale, rendered_view_id, widget_json))
+        connection.execute("INSERT INTO chat_turns (session_hash, message_id, text, menu_revision, status, locale, rendered_view_id, widget_view, confirmation_view) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)", (session_hash, message_id, text, menu_revision, locale, rendered_view_id, widget_json, confirmation_json))
         return None
 
 
@@ -174,6 +180,7 @@ def provider_request(text: str, context: str, locale: Literal["en", "ar"], histo
         "When the user explicitly requests a quantity and its target is known, return the suggestion directly; the Apply control already requires approval, so do not ask a redundant confirmation question. "
         "An order.confirm action contains an immutable receipt: use its stored items, prices, total and order ID even when the current cart is empty. Never recalculate a confirmed receipt using current menu prices, or claim a confirmed order was edited. "
         "Never suggest increasing a sold-out item. Resolve ordinal references ONLY using displayed_menu positions, never current_menu or a historical assistant message. If displayed_menu is null, ask for clarification on ordinal references. The current_menu and cart determine current availability, not the meaning of a displayed position. "
+        "displayed_confirmation is the issued review card, locale, acknowledgement status and current validity. It is a review, never proof of a confirmed order. Its saved items and total describe that snapshot; active false means it is stale or consumed. Only completed_actions prove an order was confirmed. "
         "displayed_widget is the server-issued snapshot backing the displayed menu. Its cart contains saved quantities only; unsaved quantity inputs may differ and are not included. Never claim to know an unsaved or currently visible input value from this snapshot; ask the customer when needed. current_menu and cart describe current state. "
         "Count every displayed dish row, including sold-out dishes. Ask a clarification if ambiguous. Never invent prices or dishes. "
         "summary_card is null unless a compact visual summary genuinely helps, such as when the customer asks for a cart or order summary or a short comparison of dishes. Never set it together with show_menu. "
@@ -334,6 +341,7 @@ def bind_summary_card(source: str | None) -> ContainerNode | None:
 
 
 class ActionContext(TypedDict):
+    displayed_confirmation: ConfirmationContext | None
     snapshot: Snapshot
     completed_actions: list[CompletedAction]
     actions_not_seen_in_latest_reply: list[CompletedAction] | None
@@ -355,7 +363,7 @@ def resolve_quantity_reference(unseen: list[CompletedAction] | None, proposal: Q
     return {"item_id": proposal["item_id"], "quantity": proposal["quantity"], "source": "assistant_proposal"}
 
 
-def read_action_context(path: Path, token: str) -> ActionContext:
+def read_action_context(path: Path, token: str, confirmation_view: ConfirmationReference | None, locale: Literal["en", "ar"]) -> ActionContext:
     """Read action history and restaurant state at the same transaction boundary."""
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -368,17 +376,17 @@ def read_action_context(path: Path, token: str) -> ActionContext:
         if known_sequence == -1 and not unseen:
             unseen = None
         proposal: QuantityProposal | None = None if latest is None else latest["reply"]["suggestion"]
-        return {"snapshot": read_session_snapshot(connection, session_hash), "completed_actions": actions, "actions_not_seen_in_latest_reply": unseen, "latest_assistant_proposal": proposal, "quantity_reference": resolve_quantity_reference(unseen, proposal), "history": history}
+        return {"displayed_confirmation": None if confirmation_view is None else read_confirmation_context(connection, session_hash, confirmation_view, locale), "snapshot": read_session_snapshot(connection, session_hash), "completed_actions": actions, "actions_not_seen_in_latest_reply": unseen, "latest_assistant_proposal": proposal, "quantity_reference": resolve_quantity_reference(unseen, proposal), "history": history}
 
 
-async def respond(path: Path, token: str, message_id: str, text: str, menu_revision: int, locale: Literal["en", "ar"], rendered_view_id: str | None, emit: Emit | None = None, widget_view: dict[str, str | int] | None = None) -> ChatReply:
-    prior: ChatReply | None = await asyncio.to_thread(begin_turn, path, token, message_id, text, menu_revision, locale, rendered_view_id, widget_view)
+async def respond(path: Path, token: str, message_id: str, text: str, menu_revision: int, locale: Literal["en", "ar"], rendered_view_id: str | None, confirmation_view: ConfirmationReference | None, emit: Emit | None = None, widget_view: dict[str, str | int] | None = None) -> ChatReply:
+    prior: ChatReply | None = await asyncio.to_thread(begin_turn, path, token, message_id, text, menu_revision, locale, rendered_view_id, widget_view, confirmation_view)
     if prior is not None:
         return prior
     if emit is not None:
         emit("start", {"message_id": message_id})
     try:
-        action_context: ActionContext = await asyncio.to_thread(read_action_context, path, token)
+        action_context: ActionContext = await asyncio.to_thread(read_action_context, path, token, confirmation_view, locale)
         snapshot: Snapshot = action_context["snapshot"]
         displayed_menu: MenuResponse | None = await asyncio.to_thread(get_menu_view, path, token, rendered_view_id, menu_revision, locale)
         localized_menu = [{"id": item["id"], "position": item["position"], "name": item["name"][locale], "price_minor": item["price_minor"], "currency": item["currency"], "available": item["available"]} for item in snapshot["menu"]["items"]]
@@ -386,7 +394,7 @@ async def respond(path: Path, token: str, message_id: str, text: str, menu_revis
         displayed_items: list[dict[str, str | int | bool]] | None = None if displayed_menu is None else [{"id": item["id"], "position": item["position"], "name": item["name"][locale], "available": item["available"]} for item in displayed_menu["items"]]
         displayed_widget: WidgetEnvelope | None = None if widget_view is None else await asyncio.to_thread(get_widget_view, path, token, widget_view, locale, menu_revision, rendered_view_id)
         history: list[ProviderMessage] = action_context["history"]
-        context: str = json.dumps({"displayed_menu": displayed_items, "displayed_widget": displayed_widget, "current_menu": localized_menu, "cart": localized_cart, "completed_actions": action_context["completed_actions"], "quantity_reference": action_context["quantity_reference"]}, ensure_ascii=False)
+        context: str = json.dumps({"displayed_confirmation": action_context["displayed_confirmation"], "displayed_menu": displayed_items, "displayed_widget": displayed_widget, "current_menu": localized_menu, "cart": localized_cart, "completed_actions": action_context["completed_actions"], "quantity_reference": action_context["quantity_reference"]}, ensure_ascii=False)
         reply: ModelReply = await (ask_provider(text, context, locale, history) if emit is None else stream_provider(text, context, locale, history, emit))
         suggestion: QuantityProposal | None = None
         if reply.suggestion is not None:
@@ -401,6 +409,6 @@ async def respond(path: Path, token: str, message_id: str, text: str, menu_revis
         action_sequence: int = action_context["completed_actions"][-1]["sequence"] if action_context["completed_actions"] else 0
         await asyncio.to_thread(finish_turn, path, token, message_id, result, action_sequence)
         return result
-    except (ChatError, ProviderError, MenuViewError, asyncio.CancelledError):
+    except (ChatError, ProviderError, MenuViewError, ConfirmationViewError, asyncio.CancelledError):
         await asyncio.to_thread(fail_turn, path, token, message_id)
         raise

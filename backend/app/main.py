@@ -11,6 +11,7 @@ from app.cart import CartError, SessionError, confirm_order, create_session, get
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.events import issue_menu_widget, read_snapshot
+from app.confirmation_widget import ConfirmationViewError, acknowledge_confirmation
 from app.widgets import WidgetError, acknowledge_widget, initialize_widgets
 from app.widget_actions import WidgetActionError, apply_widget_quantity, confirm_widget_order, edit_widget_order, initialize_widget_actions, start_checkout
 from app.menu_views import MenuViewError, initialize_menu_views
@@ -123,6 +124,7 @@ class ChatRequest(BaseModel):
     client_message_id: str = Field(min_length=1, max_length=128)
     rendered_view_id: str | None = Field(min_length=1, max_length=128)
     widget_view: WidgetViewReference | None = None
+    confirmation_view: WidgetViewReference | None = None
     text: str = Field(min_length=1, max_length=2000)
     menu_revision: int = Field(ge=1)
     locale: Literal["en", "ar"]
@@ -133,11 +135,11 @@ async def chat(payload: ChatRequest, request: Request) -> JSONResponse:
     if not is_local_demo_request(request, "chat"):
         return error_response(403, "invalid_origin", "Chat requires the local application.")
     try:
-        reply = await respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None, None if payload.widget_view is None else payload.widget_view.model_dump())
+        reply = await respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None if payload.confirmation_view is None else payload.confirmation_view.model_dump(), None, None if payload.widget_view is None else payload.widget_view.model_dump())
         return JSONResponse(content=reply)
     except SessionError:
         return error_response(401, "session_required", "Start a session to use chat.")
-    except (ChatError, MenuViewError) as error:
+    except (ChatError, MenuViewError, ConfirmationViewError) as error:
         return error_response(409, "chat_conflict", str(error))
     except ProviderError as error:
         return error_response(502, "provider_error", str(error))
@@ -151,7 +153,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
     if not is_local_demo_request(request, "chat"):
         return error_response(403, "invalid_origin", "Chat requires the local application.")
     queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
-    task = asyncio.create_task(respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, lambda event, data: queue.put_nowait((event, data)), None if payload.widget_view is None else payload.widget_view.model_dump()))
+    task = asyncio.create_task(respond(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.client_message_id, payload.text, payload.menu_revision, payload.locale, payload.rendered_view_id, None if payload.confirmation_view is None else payload.confirmation_view.model_dump(), lambda event, data: queue.put_nowait((event, data)), None if payload.widget_view is None else payload.widget_view.model_dump()))
     started = asyncio.create_task(queue.get())
     await asyncio.wait({task, started}, return_when=asyncio.FIRST_COMPLETED)
     first: list[tuple[str, object]] = [started.result()] if started.done() else []
@@ -161,7 +163,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
             task.result()
         except SessionError:
             return error_response(401, "session_required", "Start a session to use chat.")
-        except (ChatError, MenuViewError) as error:
+        except (ChatError, MenuViewError, ConfirmationViewError) as error:
             return error_response(409, "chat_conflict", str(error))
         except ProviderError as error:
             return error_response(502, "provider_error", str(error))
@@ -181,7 +183,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
                     yield sse(*queue.get_nowait())
                 try:
                     yield sse("final", task.result())
-                except (ChatError, ProviderError, MenuViewError, SessionError) as error:
+                except (ChatError, ProviderError, MenuViewError, ConfirmationViewError, SessionError) as error:
                     yield sse("error", {"message": str(error)})
                 return
         finally:
@@ -298,13 +300,31 @@ def widget_action(payload: WidgetQuantityRequest | WidgetCheckoutRequest, reques
         return JSONResponse(content=edit_widget_order(DATABASE_PATH, token, action))
     except SessionError:
         return error_response(401, "session_required", "Start a session to use widget actions.")
-    except (WidgetActionError, CartError) as error:
+    except (WidgetActionError, CartError, ConfirmationViewError) as error:
         return error_response(409, "widget_action_conflict", str(error))
 
 
 class WidgetAcknowledgementRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     revision: int = Field(ge=1)
+
+
+class ConfirmationAcknowledgementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: int = Field(ge=1)
+    locale: Literal["en", "ar"]
+
+
+@app.post("/api/widgets/{widget_id}/confirmation-rendered", response_model=None)
+def confirmation_rendered(widget_id: str, payload: ConfirmationAcknowledgementRequest, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "widget-rendered"):
+        return error_response(403, "invalid_origin", "Widget acknowledgements require the local application.")
+    try:
+        return JSONResponse(content=acknowledge_confirmation(DATABASE_PATH, request.cookies.get("restaurant_session", ""), {"widget_id": widget_id, "revision": payload.revision}, payload.locale))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to acknowledge widgets.")
+    except ConfirmationViewError as error:
+        return error_response(409, "widget_conflict", str(error))
 
 
 @app.get("/api/widgets/menu/{locale}", response_model=None)
