@@ -11,6 +11,7 @@ from app.cart import CartError, SessionError, confirm_order, create_session, get
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.events import read_snapshot
+from app.widgets import WidgetError, acknowledge_widget, initialize_widgets, issue_menu_widget
 from app.menu_views import MenuViewError, initialize_menu_views
 from app.chat import ChatError, ProviderError, initialize_chat, respond
 
@@ -24,6 +25,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     initialize_orders(DATABASE_PATH)
     initialize_chat(DATABASE_PATH)
     initialize_menu_views(DATABASE_PATH)
+    initialize_widgets(DATABASE_PATH)
     yield
 
 
@@ -180,6 +182,31 @@ def is_local_demo_request(request: Request, action: str) -> bool:
 
 def error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"code": code, "message": message})
+
+
+class WidgetAcknowledgementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: int = Field(ge=1)
+
+
+@app.get("/api/widgets/menu/{locale}", response_model=None)
+def widget_menu(locale: Literal["en", "ar"], request: Request) -> JSONResponse:
+    try:
+        return JSONResponse(content=issue_menu_widget(DATABASE_PATH, request.cookies.get("restaurant_session", ""), locale))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to access widgets.")
+
+
+@app.post("/api/widgets/{widget_id}/rendered", response_model=None)
+def widget_rendered(widget_id: str, payload: WidgetAcknowledgementRequest, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "widget-rendered"):
+        return error_response(403, "invalid_origin", "Widget acknowledgements require the local application.")
+    try:
+        return JSONResponse(content=acknowledge_widget(DATABASE_PATH, request.cookies.get("restaurant_session", ""), widget_id, payload.revision))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to acknowledge widgets.")
+    except WidgetError as error:
+        return error_response(409, "widget_conflict", str(error))
 
 
 @app.post("/api/payloads/validate")

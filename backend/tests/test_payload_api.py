@@ -70,6 +70,37 @@ class PayloadApiTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.load(error), ""
 
+    def widget(self, locale: str, cookie: str) -> dict[str, Any]:
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/widgets/menu/{locale}", headers={"Cookie": cookie})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.load(response)
+
+    def test_widget_revisions_are_owned_immutable_and_acknowledged(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other_cookie = self.restaurant_request("session", {}, "", "session")
+        first = self.widget("en", cookie)
+        self.assertEqual(first, self.widget("en", cookie))
+        self.assertNotEqual(first["widget_id"], self.widget("ar", cookie)["widget_id"])
+        self.assertNotEqual(first["widget_id"], self.widget("en", other_cookie)["widget_id"])
+        endpoint = f"widgets/{first['widget_id']}/rendered"
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1}, other_cookie, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1}, cookie, "widget-rendered")[1], first)
+        status, _, _ = self.restaurant_request("cart/quantity", {"action_id": "widget-test", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        self.assertEqual(status, 200)
+        second = self.widget("en", cookie)
+        self.assertEqual(second["widget_id"], first["widget_id"])
+        self.assertEqual(second["revision"], first["revision"] + 1)
+        self.assertEqual(first["cart"]["items"], [])
+        self.assertEqual(second["cart"]["items"][0]["quantity"], 1)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": second["revision"]}, cookie, "widget-rendered")[1], second)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1}, cookie, "widget-rendered")[1], first)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 999}, cookie, "widget-rendered")[0], 409)
+        with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
+            stored = connection.execute("SELECT envelope_json FROM widget_revisions WHERE widget_id = ? AND revision = 1", (first["widget_id"],)).fetchone()
+            acknowledged = connection.execute("SELECT revision FROM widget_acknowledgements WHERE widget_id = ?", (first["widget_id"],)).fetchone()
+        self.assertEqual(acknowledged[0], second["revision"])
+        self.assertEqual(json.loads(stored[0]), first)
+
     def test_concurrent_quantity_changes_reject_stale_cart(self) -> None:
         _, cart, cookie = self.restaurant_request("session", {}, "", "session")
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/menu") as response:
