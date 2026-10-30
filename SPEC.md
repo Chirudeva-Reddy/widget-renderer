@@ -69,6 +69,10 @@ The renderer owns mirroring through `dir` and logical CSS properties. Payloads u
 
 This keeps a chart visually comparable when the customer switches languages. It also avoids changing the apparent direction of a trend as a side effect of changing the surrounding layout.
 
+### Local checkout increment
+
+The local demo uses an anonymous 24-hour cookie session, a SQLite-backed cart, and `POST /api/orders/confirm` with a client action ID. Confirmation rechecks the current cart and availability in one SQLite transaction, stores the confirmed order and action result, then clears the cart. A repeated ID returns its stored result; a different confirmation ID against the cleared cart cannot create a duplicate. These local endpoints precede the proposed widget action protocol and do not implement widget revision checks, live synchronization, or deployment-ready session settings.
+
 ### Prevent duplicate effects for every action
 
 Assign a client-generated `action_id` to every logical action, including cart changes, locale changes, form submissions, checkout, and confirmation. Disable the originating control while its action is pending. The backend processes each session-scoped ID once; a retry with that ID receives the existing result or pending status without repeating the effect. An intentional later click receives a new ID.
@@ -142,6 +146,8 @@ Use the Studio Table/Chart property names below. Do not label them custom extens
 | Input for quantity | Require `name`; use `inputType: "number"`, string `defaultValue`, and bounded `placeholder`, `required`, and `disabled`. Preserve an empty or half-entered local draft. At submission, quantity must be an integer from 0 to 99; zero removes a selection. Do not accept numeric coercion of arbitrary strings, NaN, infinity, or executable patterns. Native UI constraints do not replace backend checks. |
 | Table, Table.Row, Table.Cell | A Table contains Table.Row children; rows contain Table.Cell children. Support row `header`, and cell `children`, bounded `padding`, `width`, `colSpan`, `rowSpan`, `align`, `vAlign`, and `colSize`. Validate placement and spans. Use semantic HTML table structure and mirror the layout once. |
 | Chart | Require `data` rows containing string/finite-number fields, `series`, and `xAxis.dataKey`. Support bar or line series with `type`, `dataKey`, optional `label`/allowlisted `color`, plus `showYAxis`, `showLegend`, and bounded dimensions. Series keys must exist and have numeric values; x-axis keys must exist. Preserve point order and plotting direction. Unsupported series get a clear component issue. |
+
+The initial menu display subset supports text `weight` values `normal`, `medium`, `semibold`, and `bold`, plus integer `gap` values from 0 to 8 on Row, Col, and ListViewItem. Each gap unit renders as 4 CSS pixels; an invalid value is omitted with a warning. Badge currently supports its required `label`; Divider currently accepts no display properties. Other display properties remain unsupported until explicitly implemented.
 
 Keys are bounded strings unique among siblings. Duplicate keys produce an issue and a noninteractive placeholder for the conflicting node; do not silently re-key it from its position. Known display properties such as `size`, `weight`, `color`, `textAlign`, and `gap` are validated and supported without warnings when valid. Translate tokens through explicit mappings; never spread arbitrary props into the DOM or accept unrestricted CSS/URL values. Unknown properties receive an explicit warning and are omitted. Invalid optional display properties receive a warning and use the documented safe rendering rule; invalid required content becomes a local placeholder or root error as appropriate.
 

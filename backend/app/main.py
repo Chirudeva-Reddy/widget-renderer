@@ -1,12 +1,26 @@
 import json
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from typing import Literal, TypedDict
 
 from fastapi import FastAPI, Request
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.cart import CartError, SessionError, confirm_order, create_session, get_cart, initialize_cart, initialize_orders, set_quantity
 from fastapi.responses import JSONResponse
 
+from app.menu import DATABASE_PATH, ItemNotFoundError, MenuResponse, get_menu, initialize_menu, restock_item, sell_out_item
 from app.validator import InvalidSource, ValidationResult, unique_object, validate_source
 
-app: FastAPI = FastAPI()
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    initialize_menu(DATABASE_PATH)
+    initialize_cart(DATABASE_PATH)
+    initialize_orders(DATABASE_PATH)
+    yield
+
+
+app: FastAPI = FastAPI(lifespan=lifespan)
 
 
 class HealthResponse(TypedDict):
@@ -16,6 +30,98 @@ class HealthResponse(TypedDict):
 @app.get("/api/health")
 async def health() -> HealthResponse:
     return {"status": "ok"}
+
+
+@app.get("/api/menu")
+def menu() -> MenuResponse:
+    return get_menu(DATABASE_PATH)
+
+
+
+class CartQuantityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: str = Field(min_length=1, max_length=128)
+    item_id: str = Field(min_length=1, max_length=128)
+    quantity: int = Field(ge=0, le=99)
+
+
+@app.post("/api/session", response_model=None)
+def session(request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "session"):
+        return error_response(403, "invalid_origin", "Session creation requires the local application.")
+    token: str = request.cookies.get("restaurant_session", "")
+    if token:
+        try:
+            return JSONResponse(content=get_cart(DATABASE_PATH, token))
+        except SessionError:
+            return error_response(401, "session_expired", "Your session has expired. Clear the session cookie and try again.")
+    token = create_session(DATABASE_PATH)
+    response: JSONResponse = JSONResponse(content=get_cart(DATABASE_PATH, token))
+    response.set_cookie("restaurant_session", token, httponly=True, samesite="strict", secure=False, max_age=86400, path="/")
+    return response
+
+
+@app.get("/api/cart", response_model=None)
+def cart(request: Request) -> JSONResponse:
+    try:
+        return JSONResponse(content=get_cart(DATABASE_PATH, request.cookies.get("restaurant_session", "")))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to access your cart.")
+
+
+@app.post("/api/cart/quantity", response_model=None)
+def cart_quantity(payload: CartQuantityRequest, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "cart"):
+        return error_response(403, "invalid_origin", "Cart changes require the local application.")
+    try:
+        return JSONResponse(content=set_quantity(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.action_id, payload.item_id, payload.quantity))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to access your cart.")
+    except CartError as error:
+        return error_response(409, "cart_conflict", str(error))
+
+
+class ConfirmOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action_id: str = Field(min_length=1, max_length=128)
+    cart_revision: str = Field(min_length=64, max_length=64)
+
+
+@app.post("/api/orders/confirm", response_model=None)
+def order_confirm(payload: ConfirmOrderRequest, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "confirm"):
+        return error_response(403, "invalid_origin", "Order confirmation requires the local application.")
+    try:
+        return JSONResponse(content=confirm_order(DATABASE_PATH, request.cookies.get("restaurant_session", ""), payload.action_id, payload.cart_revision))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to confirm your order.")
+    except CartError as error:
+        return error_response(409, "order_conflict", str(error))
+
+@app.post("/api/demo/menu/{item_id}/sell-out", response_model=None)
+def sell_out(item_id: str, request: Request) -> MenuResponse | JSONResponse:
+    if not is_local_demo_request(request, "sell-out"):
+        return error_response(403, "demo_only", "This control is available only in the local demo.")
+    try:
+        return sell_out_item(DATABASE_PATH, item_id)
+    except ItemNotFoundError:
+        return error_response(404, "item_not_found", "Menu item not found.")
+
+
+@app.post("/api/demo/menu/{item_id}/restock", response_model=None)
+def restock(item_id: str, request: Request) -> MenuResponse | JSONResponse:
+    if not is_local_demo_request(request, "restock"):
+        return error_response(403, "demo_only", "This control is available only in the local demo.")
+    try:
+        return restock_item(DATABASE_PATH, item_id)
+    except ItemNotFoundError:
+        return error_response(404, "item_not_found", "Menu item not found.")
+
+
+def is_local_demo_request(request: Request, action: str) -> bool:
+    host: str = request.url.hostname or ""
+    origin: str = request.headers.get("origin", "")
+    return (request.client is not None and request.client.host in ("127.0.0.1", "::1") and host in ("127.0.0.1", "localhost", "::1") and origin in ("http://127.0.0.1:5173", "http://localhost:5173") and request.headers.get("x-demo-action") == action)
 
 
 def error_response(status_code: int, code: str, message: str) -> JSONResponse:

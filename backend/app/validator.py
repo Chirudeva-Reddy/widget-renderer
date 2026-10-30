@@ -1,5 +1,5 @@
 import json
-from typing import Literal, NoReturn, TypedDict
+from typing import Literal, NoReturn, NotRequired, TypedDict
 
 
 class Issue(TypedDict):
@@ -10,8 +10,18 @@ class Issue(TypedDict):
 
 
 class TextNode(TypedDict):
-    kind: Literal["text"]
+    kind: Literal["text", "title", "caption"]
     value: str
+    weight: NotRequired[Literal["normal", "medium", "semibold", "bold"]]
+
+
+class BadgeNode(TypedDict):
+    kind: Literal["badge"]
+    label: str
+
+
+class DividerNode(TypedDict):
+    kind: Literal["divider"]
 
 
 class ProblemNode(TypedDict):
@@ -22,9 +32,10 @@ class ProblemNode(TypedDict):
 class ContainerNode(TypedDict):
     kind: Literal["card", "list", "list_item", "row", "col"]
     children: list["Node"]
+    gap: NotRequired[int]
 
 
-Node = TextNode | ProblemNode | ContainerNode
+Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode
 
 
 class ValidationResult(TypedDict):
@@ -134,7 +145,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
     nodes: list[Node] = []
     seen_keys: set[str] = set()
     for prop in data:
-        if prop not in {"type", "children", "key"}:
+        if prop not in ({"type", "children", "key", "gap"} if component in ("Row", "Col", "ListViewItem") else {"type", "children", "key"}):
             issues.append(issue("unsupported_property", f"{path}.{prop}", "warning", "Property is not supported."))
     key: object = data.get("key")
     if isinstance(key, str) and len(key) > 128:
@@ -153,11 +164,11 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
                 continue
             seen_keys.add(child_key)
         child_type: object = child.get("type") if isinstance(child, dict) else None
-        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Row", "Col"))
+        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Row", "Col"))
         if not isinstance(child, dict) or not allowed:
             issues.append(issue("unsupported_child", child_path, "error", "Child is unsupported or invalid."))
             nodes.append({"kind": "problem", "message": "This item could not be displayed."})
-        elif child_type == "Text":
+        elif child_type in ("Text", "Title", "Caption"):
             value: object = child.get("value")
             if not isinstance(value, str):
                 issues.append(issue("unsupported_child", child_path, "error", "Child is unsupported or invalid."))
@@ -166,12 +177,40 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             if len(value) > 4096:
                 raise InvalidSource("Text exceeds the size limit.")
             for prop in child:
-                if prop not in {"type", "value", "key"}:
+                if prop not in {"type", "value", "key", "weight"}:
                     issues.append(issue("unsupported_property", f"{child_path}.{prop}", "warning", "Property is not supported."))
             child_key_value: object = child.get("key")
             if child_key_value is not None and not isinstance(child_key_value, str):
                 issues.append(issue("invalid_key", f"{child_path}.key", "warning", "Key must be a string or null."))
-            nodes.append({"kind": "text", "value": value})
+            text_kind: Literal["text", "title", "caption"] = {"Text": "text", "Title": "title", "Caption": "caption"}[str(child_type)]
+            text_node: TextNode = {"kind": text_kind, "value": value}
+            weight: object = child.get("weight")
+            if weight in ("normal", "medium", "semibold", "bold"):
+                text_node["weight"] = weight
+            elif "weight" in child:
+                issues.append(issue("invalid_property", f"{child_path}.weight", "warning", "Weight is not supported."))
+            nodes.append(text_node)
+        elif child_type == "Badge":
+            label: object = child.get("label")
+            if not isinstance(label, str):
+                issues.append(issue("unsupported_child", child_path, "error", "Badge requires a string label."))
+                nodes.append({"kind": "problem", "message": "This item could not be displayed."})
+                continue
+            if len(label) > 4096:
+                raise InvalidSource("Badge label exceeds the size limit.")
+            for prop in child:
+                if prop not in {"type", "label", "key"}:
+                    issues.append(issue("unsupported_property", f"{child_path}.{prop}", "warning", "Property is not supported."))
+            if child.get("key") is not None and not isinstance(child.get("key"), str):
+                issues.append(issue("invalid_key", f"{child_path}.key", "warning", "Key must be a string or null."))
+            nodes.append({"kind": "badge", "label": label})
+        elif child_type == "Divider":
+            for prop in child:
+                if prop not in {"type", "key"}:
+                    issues.append(issue("unsupported_property", f"{child_path}.{prop}", "warning", "Property is not supported."))
+            if child.get("key") is not None and not isinstance(child.get("key"), str):
+                issues.append(issue("invalid_key", f"{child_path}.key", "warning", "Key must be a string or null."))
+            nodes.append({"kind": "divider"})
         elif not isinstance(child.get("children"), list):
             issues.append(issue("unsupported_child", child_path, "error", "Container children must be an array."))
             nodes.append({"kind": "problem", "message": "This item could not be displayed."})
@@ -179,10 +218,17 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             nested, nested_issues = validate_container(child, child_path, str(child_type))
             nodes.append(nested)
             issues.extend(nested_issues)
-    return {"kind": kinds[component], "children": nodes}, issues
+    container: ContainerNode = {"kind": kinds[component], "children": nodes}
+    if component in ("Row", "Col", "ListViewItem") and "gap" in data:
+        gap: object = data["gap"]
+        if isinstance(gap, int) and not isinstance(gap, bool) and 0 <= gap <= 8:
+            container["gap"] = gap
+        else:
+            issues.append(issue("invalid_property", f"{path}.gap", "warning", "Gap must be an integer from 0 to 8."))
+    return container, issues
 
 
 def count_nodes(node: Node) -> int:
-    if node["kind"] in ("text", "problem"):
+    if node["kind"] in ("text", "title", "caption", "badge", "divider", "problem"):
         return 1
     return 1 + sum(count_nodes(child) for child in node["children"])
