@@ -44,11 +44,11 @@ function QuantityEditor({ item, cart, locale, disabled, edit, setEdit, onChange 
 
 type OrderingMenuProps = {
   menu: Menu; cart: Cart; card: Card; locale: "en" | "ar"; disabled: boolean; error: string;
-  edits: Readonly<Record<string, QuantityEdit>>; onEdit: (itemId: string, edit: QuantityEdit | null) => void;
+  edits: Readonly<Record<string, QuantityEdit>>; onEdit: (itemId: string, edit: QuantityEdit | null) => void; onReview: () => void;
   onChange: (change: CartChange) => Promise<boolean>; renderNode: (node: Node) => ReactElement;
 };
 
-export function OrderingMenu({ menu, cart, card, locale, disabled, error, edits, onEdit, onChange, renderNode }: OrderingMenuProps): ReactElement {
+export function OrderingMenu({ menu, cart, card, locale, disabled, error, edits, onEdit, onReview, onChange, renderNode }: OrderingMenuProps): ReactElement {
   if (card.kind !== "list" || card.children.length !== menu.items.length) throw new Error("The ordering menu does not match its authoritative dish rows.");
   return <div className="ordering-menu">
     {menu.items.map((item, index) => <div className="ordering-item" key={item.id}>
@@ -56,6 +56,8 @@ export function OrderingMenu({ menu, cart, card, locale, disabled, error, edits,
       <QuantityEditor item={item} cart={cart} locale={locale} disabled={disabled} edit={edits[item.id] ?? null} setEdit={(edit: QuantityEdit | null) => onEdit(item.id, edit)} onChange={onChange} />
     </div>)}
     <p>{locale === "ar" ? "إجمالي الأصناف المختارة" : "Selected items total"}: <bdi>AED {(cart.total_minor / 100).toFixed(2)}</bdi></p>
+    {Object.keys(edits).length > 0 && <p className="notice">{locale === "ar" ? "طبّق الكميات المدخلة قبل مراجعة الطلب." : "Apply your entered quantities before reviewing the order."}</p>}
+    <button type="button" disabled={disabled || cart.items.length === 0 || Object.keys(edits).length > 0} onClick={onReview}>{locale === "ar" ? "مراجعة الطلب" : "Review order"}</button>
     {error && <p className="notice" role="alert">{error}</p>}
   </div>;
 }

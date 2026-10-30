@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ConfirmationConflict, confirmOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, sendChat, startSession, updateCart, validatePayload } from "./api";
 import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult } from "./api";
 import { Chart } from "./Chart";
+import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
 import { OrderingMenu } from "./OrderingMenu";
 import type { CartChange, QuantityEdit } from "./OrderingMenu";
 import { PreviewControl } from "./PreviewControl";
@@ -97,14 +98,34 @@ function App(): ReactElement {
   }
 
   const [confirmation, setConfirmation] = useState<Confirmation | null>(readConfirmation);
+  const [checkoutRevision, setCheckoutRevision] = useState<string | null>(null);
+  const orderingMenuRef = useRef<HTMLDivElement | null>(null);
   const pendingChanges = useRef<number>(0);
   const [sessionReady, setSessionReady] = useState<boolean>(false);
   const [live, setLive] = useState<boolean>(false);
   const [liveNotice, setLiveNotice] = useState<string>("Connecting to live updates…");
 
 
+  function reviewOrder(): void {
+    if (cart === null || !live || pendingChanges.current > 0 || confirmation !== null || Object.keys(quantityEdits).length > 0 || cart.items.length === 0) return;
+    setCheckoutRevision(cart.revision);
+    setOrder(null);
+    setCartError("");
+  }
+
+  function editOrder(): void {
+    if (confirmation !== null || pendingChanges.current > 0) return;
+    setCheckoutRevision(null);
+    setOrder(null);
+    window.requestAnimationFrame(() => {
+      orderingMenuRef.current?.scrollIntoView({ block: "nearest" });
+      orderingMenuRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+    });
+  }
+
   async function confirmCart(): Promise<void> {
-    if (cart === null || cartPending) return;
+    if (cart === null || !live || pendingChanges.current > 0) return;
+    if (confirmation === null && (checkoutRevision === null || checkoutRevision !== cart.revision || !cart.can_checkout || Object.keys(quantityEdits).length > 0)) return;
     pendingChanges.current += 1;
     setLive(false);
     setCartPending(true);
@@ -114,6 +135,8 @@ function App(): ReactElement {
       sessionStorage.setItem(confirmationStorageKey, JSON.stringify(attempt));
       const confirmed: Order = await confirmOrder(attempt.actionId, attempt.cartRevision);
       setOrder(confirmed);
+      setCheckoutRevision(null);
+      setQuantityEdits({});
       sessionStorage.removeItem(confirmationStorageKey);
       setConfirmation(null);
       setCart(await fetchCart());
@@ -192,7 +215,7 @@ function App(): ReactElement {
   }
 
   async function changeQuantity({ itemId, quantity, cartRevision, actionId }: CartChange): Promise<boolean> {
-    if (cart === null || cartPending || confirmation !== null) return false;
+    if (cart === null || !live || pendingChanges.current > 0 || confirmation !== null || checkoutRevision !== null || order !== null) return false;
     pendingChanges.current += 1;
     setLive(false);
     setCartPending(true);
@@ -311,7 +334,9 @@ function App(): ReactElement {
     <section className="panel menu-panel" aria-labelledby="chat-title">
       <div className="menu-heading"><div><span className="step">RESTAURANT ASSISTANT / المساعد</span><h2 id="chat-title">Ask about the menu</h2></div><div><label htmlFor="chat-language">Language </label><select id="chat-language" value={chatLocale} onChange={(event) => setChatLocale(event.target.value as "en" | "ar")}><option value="en">English</option><option value="ar">العربية</option></select></div></div>
       <p className="menu-help">Ask in English or Arabic. Suggested cart changes require your approval.</p>
-      <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && message.widget && <div className="chat-widget" lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && menuWidgets && menu && cart ? <OrderingMenu menu={menu} cart={cart} card={menuWidgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onChange={changeQuantity} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}</div>
+      <div className="chat-history" aria-live="polite">{chatMessages.length === 0 && <p className="menu-help">Try “Show me the menu” or “Add one hummus”.</p>}{chatMessages.map((message, index) => <div key={index} className={`chat-message chat-${message.role}`}><strong>{message.role === "user" ? "You" : "Assistant"}</strong><p dir="auto">{message.text}</p>{message.role === "assistant" && message.widget && <div className="chat-widget" ref={index === activeMenuIndex ? orderingMenuRef : null} lang={index === activeMenuIndex ? chatLocale : message.locale} dir={(index === activeMenuIndex ? chatLocale : message.locale) === "ar" ? "rtl" : "ltr"}>{index === activeMenuIndex && menuWidgets && menu && cart ? <OrderingMenu menu={menu} cart={cart} card={menuWidgets[chatLocale]} locale={chatLocale} disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live} error={cartError} edits={quantityEdits} onEdit={editQuantity} onReview={reviewOrder} onChange={changeQuantity} renderNode={(node: Node) => <PreviewNode node={node} />} /> : <Preview card={message.widget} />}</div>}{message.role === "assistant" && message.suggestion && <button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live || menu?.revision !== message.menuRevision || cart?.revision !== message.cartRevision} onClick={() => { if (message.suggestion) { void changeQuantity({ itemId: message.suggestion.item_id, quantity: message.suggestion.quantity, cartRevision: message.cartRevision, actionId: crypto.randomUUID() }).then((success: boolean) => { if (success) setChatMessages((messages: ChatMessage[]) => messages.map((entry, messageIndex) => messageIndex === index && entry.role === "assistant" ? { ...entry, suggestion: null } : entry)); }); } }}>Set {message.suggestion.item_id} quantity to {message.suggestion.quantity}</button>}</div>)}
+        {order ? <OrderReceipt order={order} locale={chatLocale} onStart={editOrder} /> : confirmation ? <ConfirmationRecovery locale={chatLocale} disabled={cartPending || !live} error={cartError} onRetry={() => { void confirmCart(); }} /> : checkoutRevision !== null && cart && <OrderReview cart={cart} reviewedRevision={checkoutRevision} locale={chatLocale} disabled={cartPending || !live} hasDrafts={Object.keys(quantityEdits).length > 0} error={cartError} onEdit={editOrder} onReview={reviewOrder} onConfirm={() => { void confirmCart(); }} />}
+      </div>
       {chatError && <p className="notice" role="alert">{chatError}</p>}
       <form className="chat-form" onSubmit={(event) => { void submitChat(event); }}><label htmlFor="chat-input">Your message</label><textarea id="chat-input" value={chatText} onChange={(event) => setChatText(event.target.value)} maxLength={2000} rows={2} /><button type="submit" disabled={chatPending || !live || !chatText.trim()}>{chatPending ? "Thinking…" : "Send message"}</button></form>
     </section>
@@ -322,15 +347,13 @@ function App(): ReactElement {
       {menuError && <p className="notice" role="alert">{menuError}</p>}
       {menu && <><p className="menu-revision">Menu version {menu.revision}</p><ul className="menu-list">{menu.items.map((item) => <li key={item.id}>
         <div><strong>{item.name.en}</strong><span className="menu-ar" lang="ar" dir="rtl">{item.name.ar}</span><span className="menu-price">AED {(item.price_minor / 100).toFixed(2)} · {item.available ? "Available / متوفر" : "Sold out / نفد"}</span></div>
-        <div className="menu-actions"><button type="button" disabled={cartPending || confirmation !== null || cart === null || !item.available || (cart.items.find((entry) => entry.id === item.id)?.quantity ?? 0) >= 99} onClick={() => { if (cart) void changeQuantity({ itemId: item.id, quantity: (cart.items.find((entry) => entry.id === item.id)?.quantity ?? 0) + 1, cartRevision: cart.revision, actionId: crypto.randomUUID() }); }}>Add to cart</button><button type="button" disabled={menuPending} onClick={() => { if (item.available) { void sellOut(item.id); } else { void restock(item.id); } }}>{item.available ? "Mark sold out" : "Restock"}</button></div>
+        <div className="menu-actions"><button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || cart === null || !item.available || (cart.items.find((entry) => entry.id === item.id)?.quantity ?? 0) >= 99} onClick={() => { if (cart) void changeQuantity({ itemId: item.id, quantity: (cart.items.find((entry) => entry.id === item.id)?.quantity ?? 0) + 1, cartRevision: cart.revision, actionId: crypto.randomUUID() }); }}>Add to cart</button><button type="button" disabled={menuPending} onClick={() => { if (item.available) { void sellOut(item.id); } else { void restock(item.id); } }}>{item.available ? "Mark sold out" : "Restock"}</button></div>
       </li>)}</ul></>}
     </section>
     <section className="panel menu-panel" aria-labelledby="cart-title">
       <div className="menu-heading"><div><span className="step">YOUR ORDER / طلبك</span><h2 id="cart-title">Your cart</h2></div><button type="button" disabled={cartPending || cart === null} onClick={() => { void fetchCart().then(setCart).catch((error: unknown) => setCartError(error instanceof Error ? error.message : "Unable to refresh cart.")); }}>Refresh cart</button></div>
       {cartError && <p className="notice" role="alert">{cartError}</p>}
-      {confirmation && <button type="button" disabled={cartPending || !live} onClick={() => { void confirmCart(); }}>Retry confirmation / retrieve result</button>}
-      {order && <p className="order-confirmed" role="status">Order confirmed · {order.order_id} · AED {(order.total_minor / 100).toFixed(2)}</p>}
-      {cart && (cart.items.length === 0 ? <p className="menu-help">Your cart is empty.</p> : <><ul className="menu-list">{cart.items.map((item) => <li key={item.id}><div><strong>{item.name_en} <span lang="ar" dir="rtl">{item.name_ar}</span></strong><span className="menu-price">{item.quantity} × AED {(item.price_minor / 100).toFixed(2)} {!item.available && "· Sold out / نفد"}</span></div><div className="menu-actions"><button type="button" disabled={cartPending || confirmation !== null} onClick={() => { void changeQuantity({ itemId: item.id, quantity: item.quantity - 1, cartRevision: cart.revision, actionId: crypto.randomUUID() }); }} aria-label={`Remove one ${item.name_en}`}>−</button><button type="button" disabled={cartPending || confirmation !== null || !item.available || item.quantity >= 99} onClick={() => { void changeQuantity({ itemId: item.id, quantity: item.quantity + 1, cartRevision: cart.revision, actionId: crypto.randomUUID() }); }} aria-label={`Add one ${item.name_en}`}>+</button></div></li>)}</ul><p className="menu-help">Selected items total: AED {(cart.total_minor / 100).toFixed(2)}</p>{!cart.can_checkout && <p className="notice">A selected item is sold out. Remove it or restock it before confirming.</p>}<button type="button" disabled={cartPending || confirmation !== null || !cart.can_checkout || !live} onClick={() => { void confirmCart(); }}>Confirm order</button></>)}
+      {cart && (cart.items.length === 0 ? <p className="menu-help">Your cart is empty.</p> : <><ul className="menu-list">{cart.items.map((item) => <li key={item.id}><div><strong>{item.name_en} <span lang="ar" dir="rtl">{item.name_ar}</span></strong><span className="menu-price">{item.quantity} × AED {(item.price_minor / 100).toFixed(2)} {!item.available && "· Sold out / نفد"}</span></div><div className="menu-actions"><button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null} onClick={() => { void changeQuantity({ itemId: item.id, quantity: item.quantity - 1, cartRevision: cart.revision, actionId: crypto.randomUUID() }); }} aria-label={`Remove one ${item.name_en}`}>−</button><button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !item.available || item.quantity >= 99} onClick={() => { void changeQuantity({ itemId: item.id, quantity: item.quantity + 1, cartRevision: cart.revision, actionId: crypto.randomUUID() }); }} aria-label={`Add one ${item.name_en}`}>+</button></div></li>)}</ul><p className="menu-help">Selected items total: AED {(cart.total_minor / 100).toFixed(2)}</p>{!cart.can_checkout && <p className="notice">A selected item is sold out. Remove it or restock it before confirming.</p>}<button type="button" disabled={cartPending || confirmation !== null || checkoutRevision !== null || order !== null || !live || Object.keys(quantityEdits).length > 0} onClick={reviewOrder}>Review order</button></>)}
     </section>
     <footer><span>WIDGET LAB <span className="footer-slash">/</span> PAYLOAD PLAYGROUND</span><span>Built for careful experimentation.</span></footer>
   </main>;
