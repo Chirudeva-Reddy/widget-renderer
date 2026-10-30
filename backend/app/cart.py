@@ -4,7 +4,7 @@ import secrets
 import sqlite3
 import time
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 
 
 class CartItem(TypedDict):
@@ -34,12 +34,19 @@ class CartError(ValueError):
 
 def initialize_cart(path: Path) -> None:
     with sqlite3.connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         connection.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)")
         connection.execute("CREATE TABLE IF NOT EXISTS cart_items (session_hash TEXT NOT NULL, item_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 99), PRIMARY KEY (session_hash, item_id), FOREIGN KEY (session_hash) REFERENCES sessions(token_hash), FOREIGN KEY (item_id) REFERENCES menu_items(id))")
         connection.execute("CREATE TABLE IF NOT EXISTS cart_actions (session_hash TEXT NOT NULL, action_id TEXT NOT NULL, item_id TEXT NOT NULL, quantity INTEGER NOT NULL, result_json TEXT NOT NULL, cart_revision TEXT NOT NULL, PRIMARY KEY (session_hash, action_id))")
 
         # shortcut: earlier actions lack a shared chronology; backfill only with reliable ordering.
-        connection.execute("CREATE TABLE IF NOT EXISTS completed_actions (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_hash TEXT NOT NULL, action_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('cart.set_quantity', 'order.confirm')), resulting_cart_revision TEXT NOT NULL, UNIQUE(session_hash, action_id))")
+        connection.execute("CREATE TABLE IF NOT EXISTS completed_actions (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_hash TEXT NOT NULL, action_id TEXT NOT NULL, kind TEXT NOT NULL, resulting_cart_revision TEXT NOT NULL, UNIQUE(session_hash, action_id))")
+        schema: str = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'completed_actions'").fetchone()[0]
+        if "CHECK(kind IN" in schema:
+            connection.execute("ALTER TABLE completed_actions RENAME TO completed_actions_legacy")
+            connection.execute("CREATE TABLE completed_actions (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_hash TEXT NOT NULL, action_id TEXT NOT NULL, kind TEXT NOT NULL, resulting_cart_revision TEXT NOT NULL, UNIQUE(session_hash, action_id))")
+            connection.execute("INSERT INTO completed_actions SELECT * FROM completed_actions_legacy")
+            connection.execute("DROP TABLE completed_actions_legacy")
 
         columns: set[str] = {row[1] for row in connection.execute("PRAGMA table_info(cart_actions)").fetchall()}
         if "cart_revision" not in columns:
@@ -128,11 +135,14 @@ class Order(TypedDict):
 class CompletedQuantityAction(TypedDict):
     sequence: int
     action_id: str
-    type: Literal["cart.set_quantity"]
+    type: Literal["cart.set_quantity", "cart.add", "cart.remove"]
     item_id: str
     quantity: int
     cart_revision_before: str
     cart_revision_after: str
+    widget_id: NotRequired[str]
+    revision: NotRequired[int]
+    position: NotRequired[int]
 
 
 class CompletedConfirmationAction(TypedDict):
@@ -142,12 +152,33 @@ class CompletedConfirmationAction(TypedDict):
     order: Order
     cart_revision_before: str
     cart_revision_after: str
+    widget_id: NotRequired[str]
+    revision: NotRequired[int]
 
 
-CompletedAction = CompletedQuantityAction | CompletedConfirmationAction
+class CompletedNavigationAction(TypedDict):
+    sequence: int
+    action_id: str
+    type: Literal["checkout.start", "order.edit"]
+    widget_id: str
+    revision: int
+    cart_revision_after: str
 
 
-def record_completed_action(connection: sqlite3.Connection, session_hash: str, action_id: str, kind: Literal["cart.set_quantity", "order.confirm"], resulting_cart_revision: str) -> None:
+class CompletedLocaleAction(TypedDict):
+    sequence: int
+    action_id: str
+    type: Literal["locale.set"]
+    widget_id: str
+    revision: int
+    lang: Literal["en", "ar"]
+    cart_revision_after: str
+
+
+CompletedAction = CompletedQuantityAction | CompletedConfirmationAction | CompletedNavigationAction | CompletedLocaleAction
+
+
+def record_completed_action(connection: sqlite3.Connection, session_hash: str, action_id: str, kind: Literal["cart.set_quantity", "order.confirm", "checkout.start", "order.edit", "locale.set"], resulting_cart_revision: str) -> None:
     connection.execute("INSERT INTO completed_actions (session_hash, action_id, kind, resulting_cart_revision) VALUES (?, ?, ?, ?)", (session_hash, action_id, kind, resulting_cart_revision))
 
 
@@ -156,16 +187,32 @@ def read_completed_actions(connection: sqlite3.Connection, session_hash: str) ->
     rows: list[tuple[int, str, str, str]] = connection.execute("SELECT sequence, action_id, kind, resulting_cart_revision FROM completed_actions WHERE session_hash = ? ORDER BY sequence DESC LIMIT 20", (session_hash,)).fetchall()
     actions: list[CompletedAction] = []
     for sequence, action_id, kind, revision_after in reversed(rows):
-        if kind == "cart.set_quantity":
+        widget_row: tuple[str] | None = connection.execute("SELECT request_json FROM widget_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
+        widget_request: dict[str, object] | None = None if widget_row is None else json.loads(widget_row[0])
+        if kind in ("cart.set_quantity", "cart.add", "cart.remove"):
             quantity_row: tuple[str, int, str] | None = connection.execute("SELECT item_id, quantity, cart_revision FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
             if quantity_row is None:
                 raise RuntimeError(f"Completed cart action {action_id} has no stored result.")
-            actions.append({"sequence": sequence, "action_id": action_id, "type": "cart.set_quantity", "item_id": quantity_row[0], "quantity": quantity_row[1], "cart_revision_before": quantity_row[2], "cart_revision_after": revision_after})
+            quantity_action: CompletedQuantityAction = {"sequence": sequence, "action_id": action_id, "type": kind, "item_id": quantity_row[0], "quantity": quantity_row[1], "cart_revision_before": quantity_row[2], "cart_revision_after": revision_after}
+            if widget_request is not None:
+                quantity_action.update({"widget_id": cast(str, widget_request["widget_id"]), "revision": cast(int, widget_request["revision"]), "position": cast(int, widget_request["position"])})
+            actions.append(quantity_action)
         elif kind == "order.confirm":
             order_row: tuple[str, str] | None = connection.execute("SELECT result_json, cart_revision FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
             if order_row is None:
                 raise RuntimeError(f"Completed confirmation {action_id} has no stored result.")
-            actions.append({"sequence": sequence, "action_id": action_id, "type": "order.confirm", "order": cast(Order, json.loads(order_row[0])), "cart_revision_before": order_row[1], "cart_revision_after": revision_after})
+            confirmation_action: CompletedConfirmationAction = {"sequence": sequence, "action_id": action_id, "type": "order.confirm", "order": cast(Order, json.loads(order_row[0])), "cart_revision_before": order_row[1], "cart_revision_after": revision_after}
+            if widget_request is not None:
+                confirmation_action.update({"widget_id": cast(str, widget_request["widget_id"]), "revision": cast(int, widget_request["revision"])})
+            actions.append(confirmation_action)
+        elif kind in ("checkout.start", "order.edit", "locale.set"):
+            if widget_request is None:
+                raise RuntimeError(f"Completed widget action {action_id} has no stored result.")
+            request = widget_request
+            if kind == "locale.set":
+                actions.append({"sequence": sequence, "action_id": action_id, "type": kind, "widget_id": request["widget_id"], "revision": request["revision"], "lang": request["lang"], "cart_revision_after": revision_after})
+            else:
+                actions.append({"sequence": sequence, "action_id": action_id, "type": kind, "widget_id": request["widget_id"], "revision": request["revision"], "cart_revision_after": revision_after})
         else:
             raise RuntimeError(f"Completed action {action_id} has unsupported type {kind}.")
     return actions

@@ -75,6 +75,14 @@ class PayloadApiTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.load(response)
 
+    def rendered_menu(self, widget: dict[str, Any]) -> dict[str, Any]:
+        quantities = {item["id"]: item["quantity"] for item in widget["cart"]["items"]}
+        rows = []
+        for item in widget["menu"]["items"]:
+            quantity = quantities.get(item["id"], 0)
+            rows.append({"item_id": item["id"], "position": item["position"], "sold_out": not item["available"], "placeholder": False, "quantity": str(quantity), "draft": False, "edit_revision": None, "changed_revision": None, "disabled": False, "controls": {"input": False, "decrease": quantity == 0, "increase": not item["available"] or quantity == 99, "apply": True, "remove": quantity == 0}, "issues": [] if item["available"] else ["sold_out"]})
+        return {"locale": widget["locale"], "rows": rows, "checkout_disabled": not widget["cart"]["items"]}
+
     def test_widget_revisions_are_owned_immutable_and_acknowledged(self) -> None:
         _, cart, cookie = self.restaurant_request("session", {}, "", "session")
         _, _, other_cookie = self.restaurant_request("session", {}, "", "session")
@@ -83,8 +91,8 @@ class PayloadApiTests(unittest.TestCase):
         self.assertNotEqual(first["widget_id"], self.widget("ar", cookie)["widget_id"])
         self.assertNotEqual(first["widget_id"], self.widget("en", other_cookie)["widget_id"])
         endpoint = f"widgets/{first['widget_id']}/rendered"
-        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1}, other_cookie, "widget-rendered")[0], 409)
-        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1}, cookie, "widget-rendered")[1], first)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "rendered": self.rendered_menu(first)}, other_cookie, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "rendered": self.rendered_menu(first)}, cookie, "widget-rendered")[1], first)
         status, _, _ = self.restaurant_request("cart/quantity", {"action_id": "widget-test", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
         self.assertEqual(status, 200)
         second = self.widget("en", cookie)
@@ -92,20 +100,42 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual(second["revision"], first["revision"] + 1)
         self.assertEqual(first["cart"]["items"], [])
         self.assertEqual(second["cart"]["items"][0]["quantity"], 1)
-        self.assertEqual(self.restaurant_request(endpoint, {"revision": second["revision"]}, cookie, "widget-rendered")[1], second)
-        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1}, cookie, "widget-rendered")[1], first)
-        self.assertEqual(self.restaurant_request(endpoint, {"revision": 999}, cookie, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": second["revision"], "rendered": self.rendered_menu(second)}, cookie, "widget-rendered")[1], second)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "rendered": self.rendered_menu(first)}, cookie, "widget-rendered")[1], first)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 999, "rendered": self.rendered_menu(first)}, cookie, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1}, cookie, "widget-rendered")[0], 422)
         with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
             stored = connection.execute("SELECT envelope_json FROM widget_revisions WHERE widget_id = ? AND revision = 1", (first["widget_id"],)).fetchone()
             acknowledged = connection.execute("SELECT revision FROM widget_acknowledgements WHERE widget_id = ?", (first["widget_id"],)).fetchone()
         self.assertEqual(acknowledged[0], second["revision"])
         self.assertEqual(json.loads(stored[0]), first)
 
+    def test_rendered_view_and_locale_action_are_scoped(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        widget = self.widget("en", cookie)
+        rendered = self.rendered_menu(widget)
+        endpoint = f"widgets/{widget['widget_id']}/rendered"
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": widget["revision"], "rendered": rendered}, cookie, "widget-rendered")[0], 200)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": widget["revision"], "rendered": rendered}, other, "widget-rendered")[0], 409)
+        forged = {**rendered, "rows": [{**rendered["rows"][0], "position": 999}, *rendered["rows"][1:]]}
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": widget["revision"], "rendered": forged}, cookie, "widget-rendered")[0], 409)
+        forged_control = {**rendered, "rows": [{**rendered["rows"][0], "controls": {**rendered["rows"][0]["controls"], "remove": False}}, *rendered["rows"][1:]]}
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": widget["revision"], "rendered": forged_control}, cookie, "widget-rendered")[0], 409)
+        forged_revision = {**rendered, "rows": [{**rendered["rows"][0], "draft": True, "edit_revision": "0" * 64}, *rendered["rows"][1:]]}
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": widget["revision"], "rendered": forged_revision}, cookie, "widget-rendered")[0], 409)
+        action = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "locale-action", "type": "locale.set", "payload": {"lang": "ar"}}
+        self.assertEqual(self.restaurant_request("actions", action, other, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", action, cookie, "widget-action")[1], {"lang": "ar"})
+        self.assertEqual(self.restaurant_request("actions", action, cookie, "widget-action")[1], {"lang": "ar"})
+        self.assertEqual(self.restaurant_request("actions", {**action, "payload": {"lang": "en"}}, cookie, "widget-action")[0], 409)
+        self.assertEqual([entry["type"] for entry in self.action_context(cookie)["completed_actions"]], ["locale.set"])
+
     def test_chat_rejects_foreign_and_mismatched_widget_references(self) -> None:
         _, _, cookie = self.restaurant_request("session", {}, "", "session")
         _, _, other = self.restaurant_request("session", {}, "", "session")
         widget = self.widget("en", cookie)
-        reference = {"widget_id": widget["widget_id"], "revision": widget["revision"]}
+        reference = {"widget_id": widget["widget_id"], "revision": widget["revision"], "rendered": self.rendered_menu(widget)}
         request = {"client_message_id": "widget-chat", "text": "Show the second item", "menu_revision": widget["menu"]["revision"], "locale": "en", "rendered_view_id": widget["menu_view_id"], "widget_view": reference}
         self.assertEqual(self.restaurant_request("chat", request, other, "chat")[0], 409)
         self.assertEqual(self.restaurant_request("chat", {**request, "widget_view": {**reference, "revision": 999}}, cookie, "chat")[0], 409)
@@ -130,6 +160,118 @@ class PayloadApiTests(unittest.TestCase):
         updated = {**action, "widget_id": fresh["widget_id"], "revision": fresh["revision"], "action_id": "second", "payload": {**action["payload"], "quantity": 2, "cart_revision": fresh["cart_revision"]}}
         self.assertEqual(self.restaurant_request("actions", updated, cookie, "widget-action")[1]["items"][0]["quantity"], 2)
         self.assertEqual(len(self.action_context(cookie)["completed_actions"]), 2)
+
+    def test_widget_add_remove_are_scoped_and_idempotent(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        widget = self.widget("en", cookie)
+        add = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "add-action", "type": "cart.add", "payload": {"id": "hummus", "position": 1}}
+        self.assertEqual(self.restaurant_request("actions", {**add, "type": "cart.remove"}, cookie, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", add, other, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", {**add, "payload": {"id": "hummus", "position": 2}}, cookie, "widget-action")[0], 409)
+        status, cart, _ = self.restaurant_request("actions", add, cookie, "widget-action")
+        self.assertEqual((status, cart["items"][0]["quantity"]), (200, 1))
+        self.assertEqual(self.restaurant_request("actions", add, cookie, "widget-action")[1], cart)
+        self.assertEqual(self.restaurant_request("actions", {**add, "type": "cart.remove"}, cookie, "widget-action")[0], 409)
+        widget = self.widget("en", cookie)
+        remove = {**add, "widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "remove-action", "type": "cart.remove"}
+        self.assertEqual(self.restaurant_request("actions", remove, cookie, "widget-action")[1]["items"], [])
+        actions = self.action_context(cookie)["completed_actions"]
+        self.assertEqual([action["type"] for action in actions], ["cart.add", "cart.remove"])
+        self.assertEqual((actions[-1]["widget_id"], actions[-1]["revision"], actions[-1]["position"]), (widget["widget_id"], widget["revision"], 1))
+
+    def test_generic_drafts_are_acknowledged_owned_and_revision_bound(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        widget = self.widget("en", cookie)
+        tree = {"type": "Card", "children": [{"type": "Form", "key": "draft-form", "children": [{"type": "Input", "name": "quantity", "inputType": "number", "defaultValue": "2"}, {"type": "Select", "name": "portion", "defaultValue": "one", "options": [{"value": "one", "label": "One"}, {"value": "two", "label": "Two", "disabled": True}]}]}]}
+        generic = {"widget_id": "draft-widget", "revision": 1, "menu_revision": widget["menu"]["revision"], "cart_revision": cart["revision"], "bindings": []}
+        program = """import json, sys
+from pathlib import Path
+from app.chat import begin_turn, finish_turn
+path, token, widget, tree = Path(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4])
+begin_turn(path, token, sys.argv[5], 'draft fixture', widget['menu_revision'], 'en', None, None, None)
+finish_turn(path, token, sys.argv[5], {'widget_controls': [widget], 'suggestion': None, 'messages': [{'widget_id': widget['widget_id'], 'payload': tree}]}, 0)
+"""
+        arguments: list[str] = [sys.executable, "-c", program, str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(generic), json.dumps(tree), "draft-issue"]
+        subprocess.run(arguments, cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
+        reference = {"widget_id": generic["widget_id"], "revision": 1, "rendered": {"locale": "en", "fields": [{"index": 0, "name": "quantity", "value": "", "disabled": False, "unavailable": False}, {"index": 1, "name": "portion", "value": "two", "disabled": False, "unavailable": True}]}}
+        endpoint: str = "widgets/draft-widget/generic-rendered"
+        self.assertEqual(self.restaurant_request(endpoint, reference, other, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, reference, cookie, "widget-rendered")[:2], (200, reference))
+        self.assertEqual(self.restaurant_request(endpoint, {**reference, "revision": 2}, cookie, "widget-rendered")[0], 409)
+        fields = reference["rendered"]["fields"]
+        forged = {**reference, "rendered": {"locale": "en", "fields": [{**fields[0], "name": "forged"}, fields[1]]}}
+        self.assertEqual(self.restaurant_request(endpoint, forged, cookie, "widget-rendered")[0], 409)
+        with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
+            stored = json.loads(connection.execute("SELECT rendered_json FROM generic_widgets WHERE id = 'draft-widget'").fetchone()[0])
+        self.assertEqual(stored, reference["rendered"])
+        self.assertEqual(self.restaurant_request("widgets/generic-state", {"widget_ids": [generic["widget_id"]]}, other, "widget-rendered")[0], 409)
+        status, state, _ = self.restaurant_request("widgets/generic-state", {"widget_ids": [generic["widget_id"]]}, cookie, "widget-rendered")
+        self.assertEqual(self.restaurant_request("widgets/generic-state", {"widget_ids": ["\ud800"]}, cookie, "widget-rendered")[0], 422)
+        self.assertEqual(status, 200)
+        self.assertEqual(state[0]["widget"]["revision"], 1)
+        self.assertEqual(state[0]["payload"], tree)
+        bad_turn = {"client_message_id": "unacknowledged-generic", "text": "What is my draft?", "menu_revision": widget["menu"]["revision"], "locale": "en", "rendered_view_id": None, "generic_views": [{**reference, "rendered": {**reference["rendered"], "fields": [{**fields[0], "value": "99"}, fields[1]]}}]}
+        self.assertEqual(self.restaurant_request("chat", bad_turn, cookie, "chat")[0], 409)
+
+        generic["revision"] = 2
+        arguments[5] = json.dumps(generic)
+        arguments[-1] = "draft-update"
+        subprocess.run(arguments, cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
+        with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
+            self.assertIsNone(connection.execute("SELECT rendered_json FROM generic_widgets WHERE id = 'draft-widget'").fetchone()[0])
+        self.assertEqual(self.restaurant_request(endpoint, reference, cookie, "widget-rendered")[0], 409)
+        reference["revision"] = 2
+        self.assertEqual(self.restaurant_request(endpoint, reference, cookie, "widget-rendered")[0], 200)
+
+    def test_studio_reference_fixtures_are_valid_runtime_previews(self) -> None:
+        directory: Path = Path(__file__).resolve().parents[2] / "fixtures" / "studio"
+        for fixture in directory.glob("*.json"):
+            with self.subTest(fixture=fixture.name):
+                status, result = self.validate(fixture.read_text())
+                self.assertEqual((status, result["status"], result["issues"]), (200, "valid", []))
+        unsafe = {"type": "Card", "children": [{"type": "Box", "width": "url(https://example.com)", "children": []}]}
+        self.assertEqual(self.validate(json.dumps(unsafe))[1]["status"], "partial")
+
+    def test_generic_widget_actions_are_owned_bound_and_idempotent(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        widget = self.widget("en", cookie)
+        generic = {"widget_id": "generic-test-widget", "revision": 1, "menu_revision": widget["menu"]["revision"], "cart_revision": cart["revision"], "bindings": [{"key": "action:cart.add:hummus", "type": "cart.add", "item_id": "hummus", "position": 1, "enabled": True, "label": "Add Hummus"}]}
+        program = """import json, sys
+from pathlib import Path
+from app.chat import begin_turn, finish_turn
+path, token, widget = Path(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3])
+begin_turn(path, token, sys.argv[4], 'show actions', widget['menu_revision'], 'en', None, None, None)
+finish_turn(path, token, sys.argv[4], {'widget_controls': [widget], 'suggestion': None, 'messages': [{'widget_id': widget['widget_id'], 'payload': {'type': 'Card', 'children': []}}]}, 0)
+"""
+        subprocess.run([sys.executable, "-c", program, str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(generic), "generic-issue"], cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
+        action = {"widget_id": generic["widget_id"], "revision": 1, "action_id": "generic-add", "type": "cart.add", "payload": {"id": "hummus", "position": 1}}
+        self.assertEqual(self.restaurant_request("actions", action, other, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", {**action, "type": "cart.remove"}, cookie, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", {**action, "payload": {"id": "falafel", "position": 2}}, cookie, "widget-action")[0], 409)
+        status, result, _ = self.restaurant_request("actions", action, cookie, "widget-action")
+        self.assertEqual((status, result["items"][0]["quantity"]), (200, 1))
+        self.assertEqual(self.restaurant_request("actions", action, cookie, "widget-action")[1], result)
+        self.assertEqual(self.restaurant_request("actions", {**action, "action_id": "generic-stale"}, cookie, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", {**action, "type": "cart.remove"}, cookie, "widget-action")[0], 409)
+        event = self.action_context(cookie)["completed_actions"][-1]
+        self.assertEqual((event["type"], event["widget_id"], event["position"]), ("cart.add", generic["widget_id"], 1))
+        remove_widget = {**generic, "widget_id": "generic-remove-widget", "cart_revision": result["revision"], "bindings": [{"key": "action:cart.remove:hummus", "type": "cart.remove", "item_id": "hummus", "position": 1, "enabled": True, "label": "Remove Hummus"}]}
+        subprocess.run([sys.executable, "-c", program, str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(remove_widget), "generic-remove-issue"], cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
+        remove = {**action, "widget_id": remove_widget["widget_id"], "action_id": "generic-remove", "type": "cart.remove"}
+        removed = self.restaurant_request("actions", remove, cookie, "widget-action")[1]
+        self.assertEqual(removed["items"], [])
+        self.assertEqual(self.restaurant_request("actions", remove, cookie, "widget-action")[1], removed)
+        _, fresh_cart, third = self.restaurant_request("session", {}, "", "session")
+        fresh_widget = self.widget("en", third)
+        concurrent_widget = {**generic, "widget_id": "generic-concurrent", "menu_revision": fresh_widget["menu"]["revision"], "cart_revision": fresh_cart["revision"]}
+        subprocess.run([sys.executable, "-c", program, str(Path(self.directory.name) / "test.sqlite"), third.split("=", 1)[1], json.dumps(concurrent_widget), "generic-concurrent-issue"], cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
+        attempts = [{**action, "widget_id": concurrent_widget["widget_id"], "action_id": action_id} for action_id in ("generic-concurrent-a", "generic-concurrent-b")]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda item: self.restaurant_request("actions", item, third, "widget-action"), attempts))
+        self.assertEqual(sorted(result[0] for result in results), [200, 409])
 
     def test_widget_checkout_confirmation_and_retries(self) -> None:
         _, cart, cookie = self.restaurant_request("session", {}, "", "session")
@@ -160,6 +302,8 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual(self.restaurant_request("actions", attempts[winner], cookie, "widget-action")[1], order)
         self.assertEqual(self.restaurant_request("actions", {**attempts[winner], "payload": {"cart_revision": "0" * 64}}, cookie, "widget-action")[0], 409)
         self.assertEqual(len([action for action in self.action_context(cookie)["completed_actions"] if action["type"] == "order.confirm"]), 1)
+        confirmation_action = self.action_context(cookie)["completed_actions"][-1]
+        self.assertEqual((confirmation_action["widget_id"], confirmation_action["revision"]), (view["widget_id"], view["revision"]))
         _, new_cart, _ = self.restaurant_request("cart/quantity", {"action_id": "checkout-add-again", "item_id": "hummus", "quantity": 1, "cart_revision": self.snapshot(cookie)["cart"]["revision"]}, cookie, "cart")
         self.assertEqual(new_cart["revision"], cart["revision"])
         self.assertEqual(self.restaurant_request("actions", {**confirm, "action_id": "replay-old-review"}, cookie, "widget-action")[0], 409)
@@ -186,11 +330,16 @@ class PayloadApiTests(unittest.TestCase):
         context = self.confirmation_context(cookie, view, "en")
         self.assertEqual(context, {"widget": view, "active": True, "acknowledged": False, "locale": "en"})
         endpoint = f"widgets/{view['widget_id']}/confirmation-rendered"
-        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "en"}, other, "widget-rendered")[0], 409)
-        self.assertEqual(self.restaurant_request(endpoint, {"revision": 2, "locale": "en"}, cookie, "widget-rendered")[0], 409)
+        rendered = {"locale": "en", "rows": [{"item_id": item["id"], "quantity": item["quantity"], "sold_out": not item["available"]} for item in view["cart"]["items"]], "edit_disabled": False, "confirm_disabled": False, "issues": []}
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "en", "rendered": rendered}, other, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "en", "rendered": {**rendered, "rows": [{**rendered["rows"][0], "quantity": 99}]}}, cookie, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "en", "rendered": rendered}, cookie, "widget-rendered")[0], 200)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "en", "rendered": {**rendered, "issues": ["stale"]}}, cookie, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "en", "rendered": rendered}, other, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 2, "locale": "en", "rendered": rendered}, cookie, "widget-rendered")[0], 409)
         self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "xx"}, cookie, "widget-rendered")[0], 422)
         for locale in ("en", "en", "ar"):
-            self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": locale}, cookie, "widget-rendered")[1], view)
+            self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": locale, "rendered": {**rendered, "locale": locale}}, cookie, "widget-rendered")[1], view)
         self.assertTrue(self.confirmation_context(cookie, view, "en")["acknowledged"])
         self.assertTrue(self.confirmation_context(cookie, view, "ar")["acknowledged"])
         reference = {"widget_id": view["widget_id"], "revision": view["revision"]}
@@ -209,10 +358,10 @@ else:
         subprocess.run([sys.executable, "-c", program, str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reference), str(menu["menu"]["revision"])], cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
         with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM confirmation_acknowledgements WHERE widget_id = ?", (view["widget_id"],)).fetchone()[0], 2)
-        foreign_request = {"text": "What am I reviewing?", "client_message_id": "foreign-confirmation", "menu_revision": menu["menu"]["revision"], "locale": "en", "rendered_view_id": None, "confirmation_view": {"widget_id": view["widget_id"], "revision": 1}}
+        foreign_request = {"text": "What am I reviewing?", "client_message_id": "foreign-confirmation", "menu_revision": menu["menu"]["revision"], "locale": "en", "rendered_view_id": None, "confirmation_view": {"widget_id": view["widget_id"], "revision": 1, "rendered": rendered}}
         for endpoint in ("chat", "chat/stream"):
             self.assertEqual(self.restaurant_request(endpoint, foreign_request, other, "chat")[0], 409)
-            self.assertEqual(self.restaurant_request(endpoint, {**foreign_request, "confirmation_view": {"widget_id": view["widget_id"], "revision": 2}}, cookie, "chat")[0], 409)
+            self.assertEqual(self.restaurant_request(endpoint, {**foreign_request, "confirmation_view": {"widget_id": view["widget_id"], "revision": 2, "rendered": rendered}}, cookie, "chat")[0], 409)
         self.assertEqual(self.restaurant_request("cart/quantity", {"action_id": "context-change", "item_id": "hummus", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")[0], 200)
         stale = self.confirmation_context(cookie, view, "ar")
         self.assertFalse(stale["active"])
@@ -264,6 +413,10 @@ else:
         edit = {**confirm, "widget_id": view["widget_id"], "action_id": "edit-review", "type": "order.edit"}
         self.assertEqual(self.restaurant_request("actions", edit, cookie, "widget-action")[1], {"edited": True})
         self.assertEqual(self.restaurant_request("actions", edit, cookie, "widget-action")[1], {"edited": True})
+        actions = self.action_context(cookie)["completed_actions"]
+        self.assertEqual([action["type"] for action in actions].count("order.edit"), 1)
+        self.assertEqual([action["type"] for action in actions].count("checkout.start"), 2)
+        self.assertEqual(actions[-1]["widget_id"], view["widget_id"])
         self.assertEqual(self.restaurant_request("actions", {**confirm, "widget_id": view["widget_id"], "action_id": "edit-confirm"}, cookie, "widget-action")[0], 409)
 
     def test_widget_checkout_rejects_stale_cart(self) -> None:
@@ -342,6 +495,13 @@ else:
         updated = self.state(cookie)
         self.assertGreater(updated["state_revision"], first["state_revision"])
         self.assertEqual(updated["cart"]["items"][0]["quantity"], 1)
+        for index, locale in enumerate(("en", "ar")):
+            before, after = first["updates"][index], updated["updates"][index]
+            self.assertEqual(after["kind"], "widget_update")
+            self.assertEqual((after["message_id"], after["widget_id"]), (before["message_id"], before["widget_id"]))
+            self.assertGreater(after["revision"], before["revision"])
+            self.assertEqual(after["revision"], updated["widgets"][locale]["revision"])
+            self.assertEqual(self.validate(json.dumps(after["payload"]))[1]["preview"], updated["widgets"][locale]["payload"])
         self.assertEqual(other_first, self.state(other))
         self.assertEqual(updated, self.state(cookie))
         request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/events", headers={"Cookie": cookie, "Last-Event-ID": str(first["state_revision"])})
@@ -370,6 +530,31 @@ else:
         finally:
             self.assertEqual(self.restaurant_request(f"demo/menu/{item_id}/restock", {}, cookie, "restock")[0], 200)
 
+    def test_browser_snapshot_contract_rejects_forged_and_invalid_updates(self) -> None:
+        _, _, cookie = self.restaurant_request("session", {}, "", "session")
+        snapshot = self.state(cookie)
+        program = """import assert from 'node:assert/strict';
+import { parseSnapshot, validateSnapshot } from './src/api.ts';
+let source = '';
+for await (const chunk of process.stdin) source += chunk;
+const valid = parseSnapshot(source);
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (url, options) => originalFetch(`http://127.0.0.1:${process.argv[1]}${url}`, options);
+await validateSnapshot(valid);
+const forged = structuredClone(valid);
+forged.updates[0].widget_id = 'foreign';
+assert.throws(() => parseSnapshot(JSON.stringify(forged)));
+const old = structuredClone(valid);
+old.updates[0].revision += 1;
+assert.throws(() => parseSnapshot(JSON.stringify(old)));
+const invalid = structuredClone(valid);
+invalid.updates[0].payload.children[0].type = 'Unknown';
+await assert.rejects(validateSnapshot(parseSnapshot(JSON.stringify(invalid))));
+assert.throws(() => parseSnapshot('{'));
+assert.equal(valid.updates[0].payload.children[0].type, 'ListViewItem');
+"""
+        subprocess.run(["node", "--experimental-strip-types", "--input-type=module", "-e", program, str(self.port)], cwd=Path(__file__).resolve().parents[2] / "frontend", input=json.dumps(snapshot), check=True, capture_output=True, text=True)
+
     def test_chat_rejects_unowned_or_mismatched_menu_views(self) -> None:
         _, _, cookie = self.restaurant_request("session", {}, "", "session")
         snapshot = self.snapshot(cookie)
@@ -382,20 +567,31 @@ else:
             (snapshot["menu_view_ids"]["en"], snapshot["menu"]["revision"], "ar"),
         ]):
             with self.subTest(view_id=view_id, revision=revision, locale=locale):
-                status, result, _ = self.restaurant_request("chat", {"client_message_id": f"invalid-{index}", "text": "Add the second one", "menu_revision": revision, "locale": locale, "rendered_view_id": view_id}, cookie, "chat")
+                widget = snapshot["widgets"]["en"]
+                status, result, _ = self.restaurant_request("chat", {"client_message_id": f"invalid-{index}", "text": "Add the second one", "menu_revision": revision, "locale": locale, "rendered_view_id": view_id, "widget_view": {"widget_id": widget["widget_id"], "revision": widget["revision"], "rendered": self.rendered_menu(widget)}}, cookie, "chat")
                 self.assertEqual((status, result["code"]), (409, "chat_conflict"))
 
     def test_chat_retry_binds_the_original_rendered_view(self) -> None:
         _, _, cookie = self.restaurant_request("session", {}, "", "session")
         snapshot = self.snapshot(cookie)
         view_id: str = snapshot["menu_view_ids"]["en"]
+        widget = snapshot["widgets"]["en"]
+        reference = {"widget_id": widget["widget_id"], "revision": widget["revision"], "rendered": self.rendered_menu(widget)}
         result = {"text": "Stored reply", "suggestion": None, "menu_revision": snapshot["menu"]["revision"], "cart_revision": snapshot["cart"]["revision"], "widget": None, "locale": "en"}
         with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
             session_hash: str = connection.execute("SELECT session_hash FROM menu_views WHERE id = ?", (view_id,)).fetchone()[0]
-            connection.execute("INSERT INTO chat_turns (session_hash, message_id, text, menu_revision, status, result_json, locale, rendered_view_id) VALUES (?, 'retry', 'Show menu', ?, 'complete', ?, 'en', ?)", (session_hash, snapshot["menu"]["revision"], json.dumps(result), view_id))
-        request = {"client_message_id": "retry", "text": "Show menu", "menu_revision": snapshot["menu"]["revision"], "locale": "en", "rendered_view_id": view_id}
+            connection.execute("INSERT INTO chat_turns (session_hash, message_id, text, menu_revision, status, result_json, locale, rendered_view_id, widget_view) VALUES (?, 'retry', 'Show menu', ?, 'complete', ?, 'en', ?, ?)", (session_hash, snapshot["menu"]["revision"], json.dumps(result), view_id, json.dumps(reference, sort_keys=True)))
+        request = {"client_message_id": "retry", "text": "Show menu", "menu_revision": snapshot["menu"]["revision"], "locale": "en", "rendered_view_id": view_id, "widget_view": reference}
         status, replayed, _ = self.restaurant_request("chat", request, cookie, "chat")
-        self.assertEqual((status, replayed), (200, result))
+        self.assertEqual(status, 200)
+        self.assertTrue(replayed["message_id"])
+        self.assertEqual({key: value for key, value in replayed.items() if key not in ("message_id", "messages", "proposed_actions", "widget_author", "warnings", "suggestions", "widget_previews", "widget_authors", "widget_controls")}, result)
+        self.assertEqual(self.restaurant_request("chat", request, cookie, "chat")[1]["message_id"], replayed["message_id"])
+        old_widget_reply = {**result, "message_id": "legacy-assistant", "widget": widget["payload"], "messages": [{"kind": "text", "message_id": "legacy-assistant", "widget_id": None, "revision": None, "payload": {"text": result["text"]}}, {"kind": "widget", "message_id": widget["widget_id"], "widget_id": widget["widget_id"], "revision": widget["revision"], "payload": snapshot["updates"][0]["payload"]}]}
+        with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
+            connection.execute("INSERT INTO chat_turns (session_hash, message_id, text, menu_revision, status, result_json, locale, rendered_view_id, widget_view) VALUES (?, 'legacy-widget-retry', 'Show menu', ?, 'complete', ?, 'en', ?, ?)", (session_hash, snapshot["menu"]["revision"], json.dumps(old_widget_reply), view_id, json.dumps(reference, sort_keys=True)))
+        legacy_widget = self.restaurant_request("chat", {**request, "client_message_id": "legacy-widget-retry"}, cookie, "chat")[1]
+        self.assertEqual(legacy_widget["widget_previews"], [widget["payload"]])
         status, conflict, _ = self.restaurant_request("chat", {**request, "rendered_view_id": None}, cookie, "chat")
         self.assertEqual((status, conflict["code"]), (409, "chat_conflict"))
         legacy = self.action_context(cookie)

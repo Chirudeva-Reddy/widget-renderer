@@ -5,7 +5,7 @@ from app.menu import MenuResponse
 from app.validator import ContainerNode, validate_source
 
 
-def build_menu_widget(menu: MenuResponse, locale: Literal["en", "ar"]) -> ContainerNode:
+def build_menu_tree(menu: MenuResponse, locale: Literal["en", "ar"]) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for item in menu["items"]:
         status: str = ("Available" if item["available"] else "Sold out") if locale == "en" else ("متوفر" if item["available"] else "نفد")
@@ -18,7 +18,11 @@ def build_menu_widget(menu: MenuResponse, locale: Literal["en", "ar"]) -> Contai
             ]},
             {"type": "Badge", "label": status},
         ]})
-    tree: dict[str, object] = {"type": "ListView", "children": items}
+    return {"type": "ListView", "children": items}
+
+
+def build_menu_widget(menu: MenuResponse, locale: Literal["en", "ar"]) -> ContainerNode:
+    tree: dict[str, object] = build_menu_tree(menu, locale)
     result = validate_source(json.dumps(tree, ensure_ascii=False))
     if result["status"] != "valid" or result["preview"] is None:
         raise ValueError("The backend-built menu widget failed validation.")
