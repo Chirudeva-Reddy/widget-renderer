@@ -22,8 +22,9 @@ const examples: Record<string, string> = {
   broken: '{ "type": "Card", "children": [',
 };
 
-function nodeKey(node: Node, index: number): string {
+function nodeKey(node: Node, index: number, siblings: Node[]): string {
   if ("key" in node && node.key !== undefined) return `key:${node.key}:${node.kind}`;
+  if ((node.kind === "input" || node.kind === "select") && siblings.filter((sibling) => (sibling.kind === "input" || sibling.kind === "select") && sibling.name === node.name).length === 1) return `field:${node.kind}:${node.name}`;
   return `position:${index}:${node.kind}`;
 }
 
@@ -33,16 +34,16 @@ function PreviewNode({ node }: { node: Node }): ReactElement {
   if (node.kind === "badge") return <span className="widget-badge" dir="auto">{node.label}</span>;
   if (node.kind === "spacer") return <span className="widget-spacer" aria-hidden="true" />;
   if (node.kind === "divider") return <hr className="widget-divider" />;
-  if (node.kind === "form") return <PreviewForm>{node.children.map((child, index) => <PreviewNode key={child.kind === "input" || child.kind === "select" ? `field:${child.kind}:${child.name}` : nodeKey(child, index)} node={child} />)}</PreviewForm>;
+  if (node.kind === "form") return <PreviewForm>{node.children.map((child, index) => <PreviewNode key={child.kind === "input" || child.kind === "select" ? `field:${child.kind}:${child.name}` : nodeKey(child, index, node.children)} node={child} />)}</PreviewForm>;
   if (node.kind === "chart") return <Chart chart={node} />;
   if (node.kind === "table") return <div className="table-scroll"><table className="widget-table"><tbody>{node.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.cells.map((cell, cellIndex) => {
-    const content: ReactElement[] = cell.children.map((child, index) => <PreviewNode key={nodeKey(child, index)} node={child} />);
+    const content: ReactElement[] = cell.children.map((child, index) => <PreviewNode key={nodeKey(child, index, cell.children)} node={child} />);
     return row.header ? <th key={cellIndex} scope="col" className={cell.align ? `align-${cell.align}` : undefined}>{content}</th> : <td key={cellIndex} className={cell.align ? `align-${cell.align}` : undefined}>{content}</td>;
   })}</tr>)}</tbody></table></div>;
   if (node.kind === "problem") return <p className="problem">{node.message}</p>;
   return <div className={`widget-${node.kind}${node.gap !== undefined ? ` gap-${node.gap}` : ""}`}>
     {node.children.length === 0 ? <p className="empty-card">This {node.kind === "list" ? "list" : "container"} is empty.</p>
-      : node.children.map((child, index) => <PreviewNode key={nodeKey(child, index)} node={child} />)}
+      : node.children.map((child, index) => <PreviewNode key={nodeKey(child, index, node.children)} node={child} />)}
   </div>;
 }
 

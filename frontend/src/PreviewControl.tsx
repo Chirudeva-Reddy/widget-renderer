@@ -20,7 +20,7 @@ export function PreviewControl({ control }: { control: ControlNode }): ReactElem
   const [localDraft, setLocalDraft] = useState<string | null>(null);
   if (control.kind === "button") return <button type="button" disabled title="Preview only: actions are disabled">{control.label}</button>;
   const name: string = control.name;
-  const value: string = context === null ? localDraft ?? control.value : context.drafts[control.name] ?? control.value;
+  const value: string = context === null ? localDraft ?? control.value : (Object.hasOwn(context.drafts, control.name) ? context.drafts[control.name] : control.value);
   function change(next: string): void {
     if (context === null) setLocalDraft(next);
     else context.setDraft(name, next);
