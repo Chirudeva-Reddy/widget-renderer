@@ -1,0 +1,17 @@
+# Secrets: brief.docx embeds the OpenRouter key
+.env
+.env.*
+!.env.example
+docs/brief.docx
+
+# Local review artifacts and OS noise
+output/
+.DS_Store
+
+# Dependencies and builds
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.sqlite
+*.db
