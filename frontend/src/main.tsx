@@ -366,14 +366,14 @@ function App(): ReactElement {
     if (cart === null || !live || pendingChanges.current > 0 || confirmation !== null || checkoutRevision !== null || order !== null) return false;
     const attempt = widgetAttempts.current.get(change.itemId);
     const original: WidgetEnvelope = attempt?.actionId === change.actionId ? attempt.envelope : envelope;
-    const item = original.menu.items.find((entry) => entry.id === change.itemId);
-    if (item === undefined) { setCartError("The selected item is no longer in the menu. Refresh and try again."); return false; }
+    const binding = original.actions.quantities.find((entry) => entry.item_id === change.itemId);
+    if (binding === undefined || change.quantity < binding.minimum || change.quantity > binding.maximum) { setCartError("This quantity is not permitted by the displayed widget. Refresh and try again."); return false; }
     widgetAttempts.current.set(change.itemId, { actionId: change.actionId, envelope: original });
     pendingChanges.current += 1;
     setLive(false);
     setCartPending(true);
     try {
-      const next: Cart = await updateWidgetCart(original.widget_id, original.revision, change.actionId, change.itemId, item.position, change.quantity, change.cartRevision);
+      const next: Cart = await updateWidgetCart(original.widget_id, original.revision, change.actionId, change.itemId, binding.position, change.quantity, change.cartRevision);
       widgetAttempts.current.delete(change.itemId);
       setCart(next);
       setCartError("");

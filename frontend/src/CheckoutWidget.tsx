@@ -25,7 +25,7 @@ export function OrderReview({ invalidated, view, renderCard, cart, reviewedRevis
     {hasDrafts && <p className="notice">{arabic ? "طبّق الكميات المدخلة قبل التأكيد." : "Apply your entered quantities before confirming."}</p>}
     {disabled && <p className="notice" role="status">{arabic ? "انتظر اكتمال التحديثات المباشرة قبل المتابعة." : "Wait for live updates and pending changes before continuing."}</p>}
     {error && <p className="notice" role="alert">{error}</p>}
-    <div className="checkout-actions"><button type="button" disabled={disabled} onClick={onEdit}>{arabic ? "تعديل الطلب" : "Edit order"}</button><button type="button" disabled={disabled || stale || hasDrafts || !cart.can_checkout} onClick={onConfirm}>{arabic ? "تأكيد الطلب" : "Confirm order"}</button></div>
+    <div className="checkout-actions"><button type="button" disabled={disabled || !view.actions.some((action) => action.type === "order.edit" && action.enabled)} onClick={onEdit}>{arabic ? "تعديل الطلب" : "Edit order"}</button><button type="button" disabled={disabled || stale || hasDrafts || !cart.can_checkout || !view.actions.some((action) => action.type === "order.confirm" && action.enabled)} onClick={onConfirm}>{arabic ? "تأكيد الطلب" : "Confirm order"}</button></div>
   </section>;
 }
 

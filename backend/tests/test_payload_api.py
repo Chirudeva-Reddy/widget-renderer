@@ -164,6 +164,60 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual(new_cart["revision"], cart["revision"])
         self.assertEqual(self.restaurant_request("actions", {**confirm, "action_id": "replay-old-review"}, cookie, "widget-action")[0], 409)
 
+    def confirmation_context(self, cookie: str, view: dict[str, Any], locale: str) -> dict[str, Any]:
+        reference = {"widget_id": view["widget_id"], "revision": view["revision"]}
+        result = subprocess.run(
+            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import read_action_context; print(json.dumps(read_action_context(Path(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3]), sys.argv[4])['displayed_confirmation']))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reference), locale],
+            cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True,
+        )
+        return json.loads(result.stdout)
+
+    def test_confirmation_bindings_acknowledgements_and_chat_context(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        empty = self.widget("en", cookie)
+        self.assertFalse(empty["actions"]["checkout"])
+        _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "context-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
+        menu = self.widget("en", cookie)
+        self.assertTrue(menu["actions"]["checkout"])
+        self.assertEqual(menu["actions"]["quantities"][0], {"item_id": "hummus", "position": 1, "minimum": 0, "maximum": 99})
+        _, view, _ = self.restaurant_request("actions", {"widget_id": menu["widget_id"], "revision": menu["revision"], "action_id": "context-review", "type": "checkout.start", "payload": {"cart_revision": cart["revision"]}}, cookie, "widget-action")
+        self.assertEqual(view["actions"], [{"type": "order.edit", "enabled": True}, {"type": "order.confirm", "enabled": True}])
+        context = self.confirmation_context(cookie, view, "en")
+        self.assertEqual(context, {"widget": view, "active": True, "acknowledged": False, "locale": "en"})
+        endpoint = f"widgets/{view['widget_id']}/confirmation-rendered"
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "en"}, other, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 2, "locale": "en"}, cookie, "widget-rendered")[0], 409)
+        self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": "xx"}, cookie, "widget-rendered")[0], 422)
+        for locale in ("en", "en", "ar"):
+            self.assertEqual(self.restaurant_request(endpoint, {"revision": 1, "locale": locale}, cookie, "widget-rendered")[1], view)
+        self.assertTrue(self.confirmation_context(cookie, view, "en")["acknowledged"])
+        self.assertTrue(self.confirmation_context(cookie, view, "ar")["acknowledged"])
+        reference = {"widget_id": view["widget_id"], "revision": view["revision"]}
+        program = """import json, sys
+from pathlib import Path
+from app.chat import begin_turn, ChatError
+path, token, reference = Path(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3])
+begin_turn(path, token, 'bound-confirmation', 'Review this', int(sys.argv[4]), 'en', None, None, reference)
+try:
+    begin_turn(path, token, 'bound-confirmation', 'Review this', int(sys.argv[4]), 'en', None, None, None)
+except ChatError as error:
+    assert 'different request' in str(error), str(error)
+else:
+    raise AssertionError('Message ID accepted a different confirmation reference')
+"""
+        subprocess.run([sys.executable, "-c", program, str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reference), str(menu["menu"]["revision"])], cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
+        with sqlite3.connect(Path(self.directory.name) / "test.sqlite") as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM confirmation_acknowledgements WHERE widget_id = ?", (view["widget_id"],)).fetchone()[0], 2)
+        foreign_request = {"text": "What am I reviewing?", "client_message_id": "foreign-confirmation", "menu_revision": menu["menu"]["revision"], "locale": "en", "rendered_view_id": None, "confirmation_view": {"widget_id": view["widget_id"], "revision": 1}}
+        for endpoint in ("chat", "chat/stream"):
+            self.assertEqual(self.restaurant_request(endpoint, foreign_request, other, "chat")[0], 409)
+            self.assertEqual(self.restaurant_request(endpoint, {**foreign_request, "confirmation_view": {"widget_id": view["widget_id"], "revision": 2}}, cookie, "chat")[0], 409)
+        self.assertEqual(self.restaurant_request("cart/quantity", {"action_id": "context-change", "item_id": "hummus", "quantity": 2, "cart_revision": cart["revision"]}, cookie, "cart")[0], 200)
+        stale = self.confirmation_context(cookie, view, "ar")
+        self.assertFalse(stale["active"])
+        self.assertEqual(stale["widget"], view)
+
     def test_widget_checkout_blocks_sold_out_item(self) -> None:
         _, cart, cookie = self.restaurant_request("session", {}, "", "session")
         _, cart, _ = self.restaurant_request("cart/quantity", {"action_id": "stock-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")
@@ -180,6 +234,14 @@ class PayloadApiTests(unittest.TestCase):
             status, blocked, _ = self.restaurant_request("actions", {**start, "widget_id": current_widget["widget_id"], "revision": current_widget["revision"], "action_id": "stock-review-updated", "payload": {"cart_revision": current["cart"]["revision"]}}, cookie, "widget-action")
             self.assertEqual(status, 200)
             self.assertFalse(blocked["cart"]["can_checkout"])
+            self.assertIn({"type": "order.confirm", "enabled": False}, blocked["actions"])
+            disabled_status, disabled_error, _ = self.restaurant_request("actions", {"widget_id": blocked["widget_id"], "revision": 1, "action_id": "stock-disabled-confirm", "type": "order.confirm", "payload": {"cart_revision": blocked["cart_revision"]}}, cookie, "widget-action")
+            self.assertEqual(disabled_status, 409)
+            self.assertIn("disabled", disabled_error["message"])
+            quantity_binding = next(binding for binding in current_widget["actions"]["quantities"] if binding["item_id"] == "hummus")
+            self.assertEqual(quantity_binding["maximum"], 1)
+            invalid_quantity = {"widget_id": current_widget["widget_id"], "revision": current_widget["revision"], "action_id": "stock-increase-disabled", "type": "cart.set_quantity", "payload": {"item_id": "hummus", "position": quantity_binding["position"], "quantity": 2, "cart_revision": current["cart"]["revision"]}}
+            self.assertEqual(self.restaurant_request("actions", invalid_quantity, cookie, "widget-action")[0], 409)
             self.assertEqual(blocked["payload"]["en"]["children"][1]["children"][-1], {"kind": "badge", "label": "Sold out"})
             self.assertEqual(blocked["payload"]["ar"]["children"][1]["children"][-1], {"kind": "badge", "label": "نفد"})
             self.assertEqual(self.restaurant_request("actions", start, cookie, "widget-action")[1], view)
@@ -355,7 +417,7 @@ class PayloadApiTests(unittest.TestCase):
 
     def action_context(self, cookie: str) -> dict[str, Any]:
         result = subprocess.run(
-            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import read_action_context; print(json.dumps(read_action_context(Path(sys.argv[1]), sys.argv[2])))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1]],
+            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import read_action_context; print(json.dumps(read_action_context(Path(sys.argv[1]), sys.argv[2], None, 'en')))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1]],
             cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True,
         )
         return json.loads(result.stdout)
@@ -411,7 +473,7 @@ class PayloadApiTests(unittest.TestCase):
         sequence: int = before["completed_actions"][-1]["sequence"]
         reply = {"text": "Proposed hummus", "suggestion": {"item_id": "hummus", "quantity": 1}, "menu_revision": before["snapshot"]["menu"]["revision"], "cart_revision": cart["revision"], "widget": None, "locale": "en"}
         result = subprocess.run(
-            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import begin_turn, finish_turn, read_history; path = Path(sys.argv[1]); token = sys.argv[2]; reply = json.loads(sys.argv[3]); begin_turn(path, token, 'proposal', 'Add hummus', reply['menu_revision'], 'en', None, None); finish_turn(path, token, 'proposal', reply, int(sys.argv[4])); print(json.dumps(read_history(path, token)))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reply), str(sequence)],
+            [sys.executable, "-c", "import json; import sys; from pathlib import Path; from app.chat import begin_turn, finish_turn, read_history; path = Path(sys.argv[1]); token = sys.argv[2]; reply = json.loads(sys.argv[3]); begin_turn(path, token, 'proposal', 'Add hummus', reply['menu_revision'], 'en', None, None, None); finish_turn(path, token, 'proposal', reply, int(sys.argv[4])); print(json.dumps(read_history(path, token)))", str(Path(self.directory.name) / "test.sqlite"), cookie.split("=", 1)[1], json.dumps(reply), str(sequence)],
             cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True,
         )
         history = json.loads(result.stdout)
