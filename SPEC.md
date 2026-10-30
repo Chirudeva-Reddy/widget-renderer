@@ -147,6 +147,8 @@ Use the Studio Table/Chart property names below. Do not label them custom extens
 | Table, Table.Row, Table.Cell | A Table contains Table.Row children; rows contain Table.Cell children. Support row `header`, and cell `children`, bounded `padding`, `width`, `colSpan`, `rowSpan`, `align`, `vAlign`, and `colSize`. Validate placement and spans. Use semantic HTML table structure and mirror the layout once. |
 | Chart | Require `data` rows containing string/finite-number fields, `series`, and `xAxis.dataKey`. Support bar or line series with `type`, `dataKey`, optional `label`/allowlisted `color`, plus `showYAxis`, `showLegend`, and bounded dimensions. Series keys must exist and have numeric values; x-axis keys must exist. Preserve point order and plotting direction. Unsupported series get a clear component issue. |
 
+The initial Form, Input, Select, and Button subset is a playground preview. Quantity inputs accept values from 0 to 99, Select options require unique values, and duplicate form field names invalidate that form. Users can edit enabled fields locally; preview buttons are disabled and supplied action properties are omitted with a warning. Form submission, action dispatch, and persistent drafts are not implemented by this subset.
+
 The initial Chart subset accepts non-empty data with up to 200 points, one to four unique bar or line series, and an x-axis key. Series values and numeric x-axis values must be finite and have absolute value at most 1e12; series labels and string x-axis values are limited to 256 characters. The chart supports the seven named color tokens, `showYAxis`, and `showLegend`; other chart properties are diagnosed as unsupported. The plot remains left-to-right, and an accessible data table exposes every point.
 
 The initial Table subset supports Table.Row, Table.Cell, row `header`, and cell `align` (`start`, `center`, or `end`). It accepts at most 100 rows and 20 cells per row. Invalid rows and cells become placeholders inside semantic table cells. Spans and other cell properties are not yet supported and are reported as warnings.
@@ -345,6 +347,20 @@ Include minimum real integration/browser checks for script-like text remaining i
 Security guidance: [OWASP XSS prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html) and [OWASP REST security](https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html). The specific controls above apply those principles to this application.
 
 ## Delivery scope and time budget
+
+### Implementation checkpoint status — October 30, 2026
+
+This snapshot describes the current local implementation and its remaining verification. A checkpoint is complete only when its entire stated result and verification pass; the planning caps below are not a measure of percentage completed or time remaining.
+
+| Checkpoint | Status | Evidence and remaining work |
+| --- | --- | --- |
+| Preflight and reviewed contracts | Partial | Project manifests and lockfiles exist and the frontend build and backend tests run. Real OpenRouter structured-output calls succeeded in local integration checks; the broader contract and clean-install verification remain open. |
+| Thin ordering flow with embedded playground | Partial | The repository has a payload playground, nested Card/ListView rendering, chat integration, menu, SQLite cart, quantity changes and order confirmation. A real model-backed order through the browser and the specified confirmation Card have not been verified. |
+| Updates and interaction correctness | Partial | Shared inventory controls, an SSE snapshot stream, cart revisions and stored action results are implemented. Full widget revisions and acknowledged rendered snapshots, all-action idempotency, invalid-update recovery and the required disconnection, concurrency and cross-session browser checks remain open. |
+| Required component and locale coverage | Partial | Initial Table and Chart subsets, nested layout, text and form previews exist. Actionable widget controls, complete EN/AR converted fixtures, RTL verification and the full validation matrix remain open. |
+| Focused regression and hand-in | Pending | The frontend production build and backend integration suite run locally. The required real-browser flow, clean install and restart checks, README, complete fixture outcomes, failure note, slides, transcript assessment and inspected submission archive remain to be completed. |
+
+No full checkpoint is verified complete. Work spans the first four checkpoints, while final regression and packaging remain. Older statements elsewhere in this draft that Git has no commits describe an earlier state. A live provider request was verified locally; full browser acceptance and submission remain open.
 
 The complete assessment needs chat, Card/ListView/Table/Chart rendering, interactions, live updates, English/Arabic, the OpenRouter hookup, arbitrary-payload inspection, and the hand-in materials. A Card/Text preview alone is a development checkpoint, not a completed submission.
 

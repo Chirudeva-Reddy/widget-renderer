@@ -2,6 +2,7 @@ import json
 from typing import Literal, NoReturn, NotRequired, TypedDict
 
 from app.chart import ChartLimitError, ChartNode, validate_chart
+from app.controls import ControlNode, validate_control
 
 
 class Issue(TypedDict):
@@ -32,7 +33,7 @@ class ProblemNode(TypedDict):
 
 
 class ContainerNode(TypedDict):
-    kind: Literal["card", "list", "list_item", "row", "col"]
+    kind: Literal["card", "list", "list_item", "row", "col", "form"]
     children: list["Node"]
     gap: NotRequired[int]
 
@@ -52,7 +53,7 @@ class TableNode(TypedDict):
     rows: list[TableRow]
 
 
-Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode | TableNode | ChartNode
+Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode | TableNode | ChartNode | ControlNode
 
 
 class ValidationResult(TypedDict):
@@ -150,8 +151,8 @@ def validate_source(source: str) -> ValidationResult:
 
 
 def validate_container(data: dict[str, object], path: str, component: str) -> tuple[ContainerNode, list[Issue]]:
-    kinds: dict[str, Literal["card", "list", "list_item", "row", "col"]] = {
-        "Card": "card", "ListView": "list", "ListViewItem": "list_item", "Row": "row", "Col": "col",
+    kinds: dict[str, Literal["card", "list", "list_item", "row", "col", "form"]] = {
+        "Card": "card", "ListView": "list", "ListViewItem": "list_item", "Row": "row", "Col": "col", "Form": "form",
     }
     children: object = data.get("children")
     if not isinstance(children, list):
@@ -181,7 +182,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
                 continue
             seen_keys.add(child_key)
         child_type: object = child.get("type") if isinstance(child, dict) else None
-        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Table", "Chart", "Row", "Col"))
+        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Table", "Chart", "Row", "Col", "Form", "Button", "Input", "Select"))
         if not isinstance(child, dict) or not allowed:
             issues.append(issue("unsupported_child", child_path, "error", "Child is unsupported or invalid."))
             nodes.append({"kind": "problem", "message": "This item could not be displayed."})
@@ -207,6 +208,13 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             elif "weight" in child:
                 issues.append(issue("invalid_property", f"{child_path}.weight", "warning", "Weight is not supported."))
             nodes.append(text_node)
+        elif child_type in ("Button", "Input", "Select"):
+            control, control_issues = validate_control(child, child_path)
+            issues.extend(control_issues)
+            if control is None:
+                nodes.append({"kind": "problem", "message": "This control could not be displayed."})
+            else:
+                nodes.append(control)
         elif child_type == "Chart":
             try:
                 chart, chart_issues = validate_chart(child, child_path)
@@ -251,8 +259,13 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             nodes.append({"kind": "problem", "message": "This item could not be displayed."})
         else:
             nested, nested_issues = validate_container(child, child_path, str(child_type))
-            nodes.append(nested)
             issues.extend(nested_issues)
+            names: list[str] = field_names(nested) if child_type == "Form" else []
+            if len(names) != len(set(names)):
+                issues.append(issue("duplicate_field_name", child_path, "error", "Form field names must be unique."))
+                nodes.append({"kind": "problem", "message": "This form could not be displayed."})
+            else:
+                nodes.append(nested)
     container: ContainerNode = {"kind": kinds[component], "children": nodes}
     if component in ("Row", "Col", "ListViewItem") and "gap" in data:
         gap: object = data["gap"]
@@ -264,7 +277,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
 
 
 def count_nodes(node: Node) -> int:
-    if node["kind"] in ("text", "title", "caption", "badge", "divider", "chart", "problem"):
+    if node["kind"] in ("text", "title", "caption", "badge", "divider", "chart", "button", "input", "select", "problem"):
         return 1
     if node["kind"] == "table":
         return 1 + sum(1 + sum(1 + sum(count_nodes(child) for child in cell["children"]) for cell in row["cells"]) for row in node["rows"])
@@ -346,3 +359,14 @@ def duplicate_table_key(data: dict[str, object], keys: set[str], path: str, issu
     elif key is not None:
         issues.append(issue("invalid_key", f"{path}.key", "warning", "Key must be a string or null."))
     return False
+
+
+
+def field_names(node: Node) -> list[str]:
+    if node["kind"] in ("input", "select"):
+        return [node["name"]]
+    if node["kind"] in ("card", "list", "list_item", "row", "col", "form"):
+        return [name for child in node["children"] for name in field_names(child)]
+    if node["kind"] == "table":
+        return [name for row in node["rows"] for cell in row["cells"] for child in cell["children"] for name in field_names(child)]
+    return []

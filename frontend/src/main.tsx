@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ConfirmationConflict, confirmOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, sendChat, startSession, updateCart, validatePayload } from "./api";
 import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult } from "./api";
 import { Chart } from "./Chart";
+import { PreviewControl } from "./PreviewControl";
 import "./style.css";
 
 const examples: Record<string, string> = {
@@ -12,15 +13,18 @@ const examples: Record<string, string> = {
   menu: JSON.stringify({ type: "ListView", children: [{ type: "ListViewItem", children: [{ type: "Row", children: [{ type: "Title", value: "Hummus", weight: "semibold" }, { type: "Text", value: "$8.50" }] }] }, { type: "ListViewItem", children: [{ type: "Title", value: "Falafel" }, { type: "Caption", value: "Crisp chickpea bites" }, { type: "Badge", label: "Sold out" }, { type: "Divider" }] }] }, null, 2),
   table: JSON.stringify({ type: "Card", children: [{ type: "Table", children: [{ type: "Table.Row", header: true, children: [{ type: "Table.Cell", children: [{ type: "Text", value: "Dish" }] }, { type: "Table.Cell", align: "end", children: [{ type: "Text", value: "Price" }] }] }, { type: "Table.Row", children: [{ type: "Table.Cell", children: [{ type: "Text", value: "Hummus" }] }, { type: "Table.Cell", align: "end", children: [{ type: "Text", value: "AED 18.00" }] }] }] }] }, null, 2),
   chart: JSON.stringify({ type: "Card", children: [{ type: "Chart", data: [{ day: "Mon", orders: 4, previous: 3 }, { day: "Tue", orders: 7, previous: 5 }, { day: "Wed", orders: 6, previous: 4 }], series: [{ type: "bar", dataKey: "orders", label: "Orders", color: "green" }, { type: "line", dataKey: "previous", label: "Previous", color: "blue" }], xAxis: { dataKey: "day" }, showYAxis: true, showLegend: true }] }, null, 2),
+  form: JSON.stringify({ type: "Card", children: [{ type: "Form", children: [{ type: "Title", value: "Order preferences" }, { type: "Input", name: "quantity", inputType: "number", defaultValue: "1", required: true }, { type: "Select", name: "portion", options: [{ value: "regular", label: "Regular" }, { value: "large", label: "Large" }], defaultValue: "regular" }, { type: "Button", label: "Add to order" }] }] }, null, 2),
   arabic: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "مرحباً! ماذا تود أن تطلب؟" }] }, null, 2),
   partial: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "This item is available." }, { type: "Unknown" }, { type: "Text", value: "This item is available too." }] }, null, 2),
   broken: '{ "type": "Card", "children": [',
 };
 
 function PreviewNode({ node }: { node: Node }): ReactElement {
+  if (node.kind === "button" || node.kind === "input" || node.kind === "select") return <PreviewControl control={node} />;
   if ("value" in node) return <p className={`widget-text widget-${node.kind}${node.weight ? ` weight-${node.weight}` : ""}`} dir="auto">{node.value}</p>;
   if (node.kind === "badge") return <span className="widget-badge" dir="auto">{node.label}</span>;
   if (node.kind === "divider") return <hr className="widget-divider" />;
+  if (node.kind === "form") return <fieldset className="widget-form"><legend>Form preview · actions disabled</legend>{node.children.map((child, index) => <PreviewNode key={index} node={child} />)}</fieldset>;
   if (node.kind === "chart") return <Chart chart={node} />;
   if (node.kind === "table") return <div className="table-scroll"><table className="widget-table"><tbody>{node.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.cells.map((cell, cellIndex) => {
     const content: ReactElement[] = cell.children.map((child, index) => <PreviewNode key={index} node={child} />);
@@ -51,6 +55,7 @@ type ChatMessage = { role: "user"; text: string } | { role: "assistant"; text: s
 function App(): ReactElement {
   const [source, setSource] = useState<string>(examples.welcome);
   const [card, setCard] = useState<Card | null>(null);
+  const [previewVersion, setPreviewVersion] = useState<number>(0);
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [notice, setNotice] = useState<string>("");
   const [pending, setPending] = useState<boolean>(false);
@@ -261,7 +266,7 @@ function App(): ReactElement {
       const next: ValidationResult = await validatePayload(source);
       if (id !== requestId.current) return;
       setResult(next);
-      if (next.preview !== null) setCard(next.preview);
+      if (next.preview !== null) { setCard(next.preview); setPreviewVersion((version: number) => version + 1); }
       else setNotice("The payload could not be displayed. The last preview, if present, may be out of date.");
     } catch (error: unknown) {
       if (id !== requestId.current) return;
@@ -274,17 +279,17 @@ function App(): ReactElement {
 
   return <main className="shell">
     <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><span className="badge">PLAYGROUND <span> / 01</span></span></header>
-    <section className="intro"><p className="eyebrow">VALIDATE &amp; PREVIEW</p><h1>See your widget<br /><em>come to life.</em></h1><p>Paste a widget payload to inspect how it renders. Supports menu layouts, text, badges, dividers, tables and charts.</p></section>
+    <section className="intro"><p className="eyebrow">VALIDATE &amp; PREVIEW</p><h1>See your widget<br /><em>come to life.</em></h1><p>Paste a widget payload to inspect how it renders. Supports menu layouts, text, badges, dividers, tables, charts and form previews.</p></section>
     <div className="workspace">
       <form className="panel editor" onSubmit={(event) => { void submit(event); }}>
         <div className="panel-heading"><div><span className="step">01 / INPUT</span><h2>Widget payload</h2></div><span className="format">JSON</span></div>
-        <div className="example-row"><label htmlFor="example">Load an example</label><select id="example" defaultValue="welcome" onChange={(event) => setSource(examples[event.target.value])}><option value="welcome">Welcome card</option><option value="menu">Nested menu</option><option value="table">Table</option><option value="chart">Chart</option><option value="arabic">Arabic text</option><option value="partial">Unsupported child</option><option value="broken">Malformed JSON</option></select></div>
+        <div className="example-row"><label htmlFor="example">Load an example</label><select id="example" defaultValue="welcome" onChange={(event) => setSource(examples[event.target.value])}><option value="welcome">Welcome card</option><option value="menu">Nested menu</option><option value="table">Table</option><option value="chart">Chart</option><option value="form">Form controls</option><option value="arabic">Arabic text</option><option value="partial">Unsupported child</option><option value="broken">Malformed JSON</option></select></div>
         <label className="source-label" htmlFor="source">Payload source</label>
         <textarea id="source" spellCheck={false} value={source} onChange={(event) => setSource(event.target.value)} aria-describedby="source-help" />
         <div className="editor-footer"><span id="source-help">Maximum source size: 32 KiB</span><button type="submit">{pending ? "Validating…" : "Validate widget"}<span aria-hidden="true"> ↗</span></button></div>
       </form>
       <section className="panel output" aria-labelledby="preview-title"><div className="panel-heading"><div><span className="step">02 / OUTPUT</span><h2 id="preview-title">Preview</h2></div><span className="live-dot">RENDER</span></div>
-        <div className="preview-area" aria-busy={pending}>{card ? <Preview card={card} /> : <div className="empty-state"><span className="empty-icon" aria-hidden="true">◇</span><p>Your preview will appear here.</p><small>Validate a payload to get started.</small></div>}</div>
+        <div className="preview-area" aria-busy={pending}>{card ? <Preview key={previewVersion} card={card} /> : <div className="empty-state"><span className="empty-icon" aria-hidden="true">◇</span><p>Your preview will appear here.</p><small>Validate a payload to get started.</small></div>}</div>
         <div className="diagnostics" aria-live="polite"><div className="diagnostics-heading"><h3>Validation</h3><span>{result ? result.status.toUpperCase() : "AWAITING INPUT"}</span></div>
           {notice && <p className="notice" role="alert">{notice}</p>}
           {result && result.issues.length > 0 ? <ul>{result.issues.map((item, index) => <li key={index}><strong>{item.severity}</strong><code>{item.path}</code><span>{item.message}</span></li>)}</ul> : <p className="quiet">{result ? "No issues found." : "Issues and validation details will show here."}</p>}
