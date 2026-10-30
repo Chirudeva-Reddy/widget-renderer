@@ -8,6 +8,7 @@ import "./style.css";
 const examples: Record<string, string> = {
   welcome: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "Welcome! What would you like to order?" }, { type: "Text", value: "Choose from the menu to get started." }] }, null, 2),
   menu: JSON.stringify({ type: "ListView", children: [{ type: "ListViewItem", children: [{ type: "Row", children: [{ type: "Title", value: "Hummus", weight: "semibold" }, { type: "Text", value: "$8.50" }] }] }, { type: "ListViewItem", children: [{ type: "Title", value: "Falafel" }, { type: "Caption", value: "Crisp chickpea bites" }, { type: "Badge", label: "Sold out" }, { type: "Divider" }] }] }, null, 2),
+  table: JSON.stringify({ type: "Card", children: [{ type: "Table", children: [{ type: "Table.Row", header: true, children: [{ type: "Table.Cell", children: [{ type: "Text", value: "Dish" }] }, { type: "Table.Cell", align: "end", children: [{ type: "Text", value: "Price" }] }] }, { type: "Table.Row", children: [{ type: "Table.Cell", children: [{ type: "Text", value: "Hummus" }] }, { type: "Table.Cell", align: "end", children: [{ type: "Text", value: "AED 18.00" }] }] }] }] }, null, 2),
   arabic: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "مرحباً! ماذا تود أن تطلب؟" }] }, null, 2),
   partial: JSON.stringify({ type: "Card", children: [{ type: "Text", value: "This item is available." }, { type: "Unknown" }, { type: "Text", value: "This item is available too." }] }, null, 2),
   broken: '{ "type": "Card", "children": [',
@@ -17,6 +18,10 @@ function PreviewNode({ node }: { node: Node }): ReactElement {
   if ("value" in node) return <p className={`widget-text widget-${node.kind}${node.weight ? ` weight-${node.weight}` : ""}`} dir="auto">{node.value}</p>;
   if (node.kind === "badge") return <span className="widget-badge" dir="auto">{node.label}</span>;
   if (node.kind === "divider") return <hr className="widget-divider" />;
+  if (node.kind === "table") return <div className="table-scroll"><table className="widget-table"><tbody>{node.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.cells.map((cell, cellIndex) => {
+    const content: ReactElement[] = cell.children.map((child, index) => <PreviewNode key={index} node={child} />);
+    return row.header ? <th key={cellIndex} scope="col" className={cell.align ? `align-${cell.align}` : undefined}>{content}</th> : <td key={cellIndex} className={cell.align ? `align-${cell.align}` : undefined}>{content}</td>;
+  })}</tr>)}</tbody></table></div>;
   if (node.kind === "problem") return <p className="problem">{node.message}</p>;
   return <div className={`widget-${node.kind}${node.gap !== undefined ? ` gap-${node.gap}` : ""}`}>
     {node.children.length === 0 ? <p className="empty-card">This {node.kind === "list" ? "list" : "container"} is empty.</p>
@@ -246,11 +251,11 @@ function App(): ReactElement {
 
   return <main className="shell">
     <header className="masthead"><div className="brand"><span className="brand-mark">W</span><span>Widget lab</span></div><span className="badge">PLAYGROUND <span> / 01</span></span></header>
-    <section className="intro"><p className="eyebrow">VALIDATE &amp; PREVIEW</p><h1>See your widget<br /><em>come to life.</em></h1><p>Paste a widget payload to inspect how it renders. Supports menu layout, text, badges and dividers.</p></section>
+    <section className="intro"><p className="eyebrow">VALIDATE &amp; PREVIEW</p><h1>See your widget<br /><em>come to life.</em></h1><p>Paste a widget payload to inspect how it renders. Supports menu layouts, text, badges, dividers and tables.</p></section>
     <div className="workspace">
       <form className="panel editor" onSubmit={(event) => { void submit(event); }}>
         <div className="panel-heading"><div><span className="step">01 / INPUT</span><h2>Widget payload</h2></div><span className="format">JSON</span></div>
-        <div className="example-row"><label htmlFor="example">Load an example</label><select id="example" defaultValue="welcome" onChange={(event) => setSource(examples[event.target.value])}><option value="welcome">Welcome card</option><option value="menu">Nested menu</option><option value="arabic">Arabic text</option><option value="partial">Unsupported child</option><option value="broken">Malformed JSON</option></select></div>
+        <div className="example-row"><label htmlFor="example">Load an example</label><select id="example" defaultValue="welcome" onChange={(event) => setSource(examples[event.target.value])}><option value="welcome">Welcome card</option><option value="menu">Nested menu</option><option value="table">Table</option><option value="arabic">Arabic text</option><option value="partial">Unsupported child</option><option value="broken">Malformed JSON</option></select></div>
         <label className="source-label" htmlFor="source">Payload source</label>
         <textarea id="source" spellCheck={false} value={source} onChange={(event) => setSource(event.target.value)} aria-describedby="source-help" />
         <div className="editor-footer"><span id="source-help">Maximum source size: 32 KiB</span><button type="submit">{pending ? "Validating…" : "Validate widget"}<span aria-hidden="true"> ↗</span></button></div>

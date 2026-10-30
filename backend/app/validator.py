@@ -35,7 +35,22 @@ class ContainerNode(TypedDict):
     gap: NotRequired[int]
 
 
-Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode
+class TableCell(TypedDict):
+    children: list["Node"]
+    align: NotRequired[Literal["start", "center", "end"]]
+
+
+class TableRow(TypedDict):
+    header: bool
+    cells: list[TableCell]
+
+
+class TableNode(TypedDict):
+    kind: Literal["table"]
+    rows: list[TableRow]
+
+
+Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode | TableNode
 
 
 class ValidationResult(TypedDict):
@@ -164,7 +179,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
                 continue
             seen_keys.add(child_key)
         child_type: object = child.get("type") if isinstance(child, dict) else None
-        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Row", "Col"))
+        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Table", "Row", "Col"))
         if not isinstance(child, dict) or not allowed:
             issues.append(issue("unsupported_child", child_path, "error", "Child is unsupported or invalid."))
             nodes.append({"kind": "problem", "message": "This item could not be displayed."})
@@ -190,6 +205,14 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             elif "weight" in child:
                 issues.append(issue("invalid_property", f"{child_path}.weight", "warning", "Weight is not supported."))
             nodes.append(text_node)
+        elif child_type == "Table":
+            if not isinstance(child.get("children"), list):
+                issues.append(issue("unsupported_child", child_path, "error", "Table children must be an array."))
+                nodes.append({"kind": "problem", "message": "This table could not be displayed."})
+            else:
+                table, table_issues = validate_table(child, child_path)
+                nodes.append(table)
+                issues.extend(table_issues)
         elif child_type == "Badge":
             label: object = child.get("label")
             if not isinstance(label, str):
@@ -231,4 +254,83 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
 def count_nodes(node: Node) -> int:
     if node["kind"] in ("text", "title", "caption", "badge", "divider", "problem"):
         return 1
+    if node["kind"] == "table":
+        return 1 + sum(1 + sum(1 + sum(count_nodes(child) for child in cell["children"]) for cell in row["cells"]) for row in node["rows"])
     return 1 + sum(count_nodes(child) for child in node["children"])
+
+
+
+def validate_table(data: dict[str, object], path: str) -> tuple[TableNode, list[Issue]]:
+    rows_value: object = data["children"]
+    if not isinstance(rows_value, list):
+        raise InvalidSource("Table children must be an array.")
+    if len(rows_value) > 100:
+        raise InvalidSource("Table exceeds the row limit.")
+    issues: list[Issue] = []
+    rows: list[TableRow] = []
+    for prop in data:
+        if prop not in {"type", "children", "key"}:
+            issues.append(issue("unsupported_property", f"{path}.{prop}", "warning", "Property is not supported."))
+    table_key: object = data.get("key")
+    if table_key is not None and not isinstance(table_key, str):
+        issues.append(issue("invalid_key", f"{path}.key", "warning", "Key must be a string or null."))
+    row_keys: set[str] = set()
+    for row_index, row in enumerate(rows_value):
+        row_path: str = f"{path}.children[{row_index}]"
+        if not isinstance(row, dict) or row.get("type") != "Table.Row" or not isinstance(row.get("children"), list):
+            issues.append(issue("invalid_table_row", row_path, "error", "Table row must contain a children array."))
+            rows.append({"header": False, "cells": [{"children": [{"kind": "problem", "message": "This row could not be displayed."}]}]})
+            continue
+        if duplicate_table_key(row, row_keys, row_path, issues):
+            rows.append({"header": False, "cells": [{"children": [{"kind": "problem", "message": "This row could not be displayed."}]}]})
+            continue
+        header_value: object = row.get("header", False)
+        header: bool = header_value if isinstance(header_value, bool) else False
+        if not isinstance(header_value, bool):
+            issues.append(issue("invalid_property", f"{row_path}.header", "warning", "Header must be a boolean."))
+        for prop in row:
+            if prop not in {"type", "children", "key", "header"}:
+                issues.append(issue("unsupported_property", f"{row_path}.{prop}", "warning", "Property is not supported."))
+        row_children: list[object] = row["children"]
+        if len(row_children) > 20:
+            raise InvalidSource("Table row exceeds the 20-column limit.")
+        cells: list[TableCell] = []
+        cell_keys: set[str] = set()
+        for cell_index, cell in enumerate(row_children):
+            cell_path: str = f"{row_path}.children[{cell_index}]"
+            if not isinstance(cell, dict) or cell.get("type") != "Table.Cell" or not isinstance(cell.get("children"), list):
+                issues.append(issue("invalid_table_cell", cell_path, "error", "Table cell must contain a children array."))
+                cells.append({"children": [{"kind": "problem", "message": "This cell could not be displayed."}]})
+                continue
+            if duplicate_table_key(cell, cell_keys, cell_path, issues):
+                cells.append({"children": [{"kind": "problem", "message": "This cell could not be displayed."}]})
+                continue
+            cell_data: dict[str, object] = {"type": "Col", "children": cell["children"]}
+            content, cell_issues = validate_container(cell_data, cell_path, "Col")
+            issues.extend(cell_issues)
+            safe_cell: TableCell = {"children": content["children"]}
+            align: object = cell.get("align")
+            if align in ("start", "center", "end"):
+                safe_cell["align"] = align
+            elif "align" in cell:
+                issues.append(issue("invalid_property", f"{cell_path}.align", "warning", "Cell alignment is not supported."))
+            for prop in cell:
+                if prop not in {"type", "children", "key", "align"}:
+                    issues.append(issue("unsupported_property", f"{cell_path}.{prop}", "warning", "Property is not supported."))
+            cells.append(safe_cell)
+        rows.append({"header": header, "cells": cells})
+    return {"kind": "table", "rows": rows}, issues
+
+
+def duplicate_table_key(data: dict[str, object], keys: set[str], path: str, issues: list[Issue]) -> bool:
+    key: object = data.get("key")
+    if isinstance(key, str):
+        if len(key) > 128:
+            raise InvalidSource("Key exceeds the size limit.")
+        if key in keys:
+            issues.append(issue("duplicate_key", path, "error", "Sibling key is duplicated."))
+            return True
+        keys.add(key)
+    elif key is not None:
+        issues.append(issue("invalid_key", f"{path}.key", "warning", "Key must be a string or null."))
+    return False

@@ -69,6 +69,25 @@ class PayloadApiTests(unittest.TestCase):
                 self.assertEqual(result["preview"]["kind"], expected_kind)
                 self.assertEqual(result["issues"], [])
 
+    def test_table_rendering_and_invalid_cells(self) -> None:
+        source = {"type": "Card", "children": [{"type": "Table", "children": [
+            {"type": "Table.Row", "header": True, "children": [{"type": "Table.Cell", "children": [{"type": "Text", "value": "Dish"}]}]},
+            {"type": "Table.Row", "children": [{"type": "Table.Cell", "align": "end", "children": [{"type": "Text", "value": "Hummus"}]}, {"type": "Unknown"}]},
+            {"type": "Unknown"},
+        ]}]}
+        status, result = self.validate(json.dumps(source))
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "partial")
+        rows = result["preview"]["children"][0]["rows"]
+        self.assertTrue(rows[0]["header"])
+        self.assertEqual(rows[1]["cells"][0]["align"], "end")
+        self.assertEqual(rows[1]["cells"][0]["children"][0]["value"], "Hummus")
+        self.assertEqual(rows[1]["cells"][1]["children"][0]["kind"], "problem")
+        self.assertEqual(rows[2]["cells"][0]["children"][0]["kind"], "problem")
+        self.assertEqual([entry["code"] for entry in result["issues"]], ["invalid_table_cell", "invalid_table_row"])
+        source["children"][0]["children"] = [{"type": "Table.Row", "children": [{"type": "Table.Cell", "children": []}] * 21}]
+        self.assertEqual(self.validate(json.dumps(source))[1]["status"], "invalid")
+
     def test_invalid_root_and_malformed_source_return_invalid_without_preview(self) -> None:
         for source, code in [('{"type":"Card","children":[', "invalid_json"), ('[]', "invalid_root"), ('{"type":"Card"}', "invalid_root"), ('{"type":"Card","type":"Card","children":[]}', "invalid_json"), ('{"view":"<Card />"}', "unsupported_template_format")]:
             with self.subTest(source=source):

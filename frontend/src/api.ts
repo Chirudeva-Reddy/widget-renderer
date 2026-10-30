@@ -4,13 +4,19 @@ export type Node =
   | { kind: "text" | "title" | "caption"; value: string; weight?: "normal" | "medium" | "semibold" | "bold" }
   | { kind: "badge"; label: string }
   | { kind: "divider" }
+  | { kind: "table"; rows: TableRow[] }
   | { kind: "problem"; message: string }
   | Container;
+export type TableRow = { header: boolean; cells: TableCell[] };
+export type TableCell = { children: Node[]; align?: "start" | "center" | "end" };
 export type Container = { kind: "card" | "list" | "list_item" | "row" | "col"; children: Node[]; gap?: number };
 const nodeSchema: z.ZodType<Node> = z.lazy(() => z.discriminatedUnion("kind", [
   z.object({ kind: z.enum(["text", "title", "caption"]), value: z.string(), weight: z.enum(["normal", "medium", "semibold", "bold"]).optional() }).strict(),
   z.object({ kind: z.literal("badge"), label: z.string() }).strict(),
   z.object({ kind: z.literal("divider") }).strict(),
+  z.object({ kind: z.literal("table"), rows: z.array(z.object({
+    header: z.boolean(), cells: z.array(z.object({ children: z.array(nodeSchema).max(100), align: z.enum(["start", "center", "end"]).optional() }).strict()).max(20),
+  }).strict()).max(100) }).strict(),
   z.object({ kind: z.literal("problem"), message: z.string() }).strict(),
   z.object({ kind: z.enum(["card", "list", "list_item", "row", "col"]), children: z.array(nodeSchema).max(100), gap: z.number().int().min(0).max(8).optional() }).strict(),
 ]));
