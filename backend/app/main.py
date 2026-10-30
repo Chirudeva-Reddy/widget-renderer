@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.events import issue_menu_widget, read_snapshot
 from app.widgets import WidgetError, acknowledge_widget, initialize_widgets
+from app.widget_actions import WidgetActionError, apply_widget_quantity, initialize_widget_actions
 from app.menu_views import MenuViewError, initialize_menu_views
 from app.chat import ChatError, ProviderError, initialize_chat, respond
 
@@ -26,6 +27,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     initialize_chat(DATABASE_PATH)
     initialize_menu_views(DATABASE_PATH)
     initialize_widgets(DATABASE_PATH)
+    initialize_widget_actions(DATABASE_PATH)
     yield
 
 
@@ -237,6 +239,36 @@ def is_local_demo_request(request: Request, action: str) -> bool:
 
 def error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"code": code, "message": message})
+
+
+class WidgetQuantityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    item_id: str = Field(min_length=1, max_length=128)
+    position: int = Field(ge=1)
+    quantity: int = Field(ge=0, le=99)
+    cart_revision: str = Field(min_length=64, max_length=64)
+
+
+class WidgetQuantityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    widget_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    action_id: str = Field(min_length=1, max_length=128)
+    type: Literal["cart.set_quantity"]
+    payload: WidgetQuantityPayload
+
+
+@app.post("/api/actions", response_model=None)
+def widget_action(payload: WidgetQuantityRequest, request: Request) -> JSONResponse:
+    if not is_local_demo_request(request, "widget-action"):
+        return error_response(403, "invalid_origin", "Widget actions require the local application.")
+    action = {"widget_id": payload.widget_id, "revision": payload.revision, "action_id": payload.action_id, "type": payload.type, **payload.payload.model_dump()}
+    try:
+        return JSONResponse(content=apply_widget_quantity(DATABASE_PATH, request.cookies.get("restaurant_session", ""), action))
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to use widget actions.")
+    except (WidgetActionError, CartError) as error:
+        return error_response(409, "widget_action_conflict", str(error))
 
 
 class WidgetAcknowledgementRequest(BaseModel):

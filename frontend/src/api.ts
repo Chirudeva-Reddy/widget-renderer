@@ -115,6 +115,16 @@ export async function fetchCart(): Promise<Cart> {
   const payload: unknown = await response.json();
   return cartSchema.parse(payload);
 }
+export async function updateWidgetCart(widgetId: string, revision: number, actionId: string, itemId: string, position: number, quantity: number, cartRevision: string): Promise<Cart> {
+  const response: Response = await fetch("/api/actions", { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-action" }, body: JSON.stringify({ widget_id: widgetId, revision, action_id: actionId, type: "cart.set_quantity", payload: { item_id: itemId, position, quantity, cart_revision: cartRevision } }) });
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    const error = z.object({ message: z.string() }).safeParse(payload);
+    throw new Error(error.success ? error.data.message : `Widget action failed (${response.status}).`);
+  }
+  return cartSchema.parse(payload);
+}
+
 export async function updateCart(itemId: string, quantity: number, actionId: string, cartRevision: string): Promise<Cart> {
   const response: Response = await fetch("/api/cart/quantity", {
     method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "cart" },

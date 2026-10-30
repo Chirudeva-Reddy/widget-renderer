@@ -83,30 +83,36 @@ def set_quantity(path: Path, token: str, action_id: str, item_id: str, quantity:
     with sqlite3.connect(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         session_hash: str = require_session(connection, token)
-        if connection.execute("SELECT 1 FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone() is not None:
+        if connection.execute("SELECT 1 FROM widget_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone() is not None:
             raise CartError("Action ID was already used for a different request.")
-        previous = connection.execute("SELECT item_id, quantity, result_json, cart_revision FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
-        if previous is not None:
-            if previous[:2] != (item_id, quantity) or previous[3] != cart_revision:
-                raise CartError("Action ID was already used for a different request.")
-            return cast(Cart, json.loads(previous[2]))
-        if read_cart(connection, session_hash)["revision"] != cart_revision:
-            raise CartError("Your cart changed. Review the updated cart and try again.")
-        item = connection.execute("SELECT available FROM menu_items WHERE id = ?", (item_id,)).fetchone()
-        if item is None:
-            raise CartError("Menu item does not exist.")
-        existing = connection.execute("SELECT quantity FROM cart_items WHERE session_hash = ? AND item_id = ?", (session_hash, item_id)).fetchone()
-        current: int = existing[0] if existing is not None else 0
-        if not item[0] and quantity > current:
-            raise CartError("Item is sold out; its quantity cannot be increased.")
-        if quantity == 0:
-            connection.execute("DELETE FROM cart_items WHERE session_hash = ? AND item_id = ?", (session_hash, item_id))
-        else:
-            connection.execute("INSERT INTO cart_items (session_hash, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(session_hash, item_id) DO UPDATE SET quantity = excluded.quantity", (session_hash, item_id, quantity))
-        result: Cart = read_cart(connection, session_hash)
-        connection.execute("INSERT INTO cart_actions (session_hash, action_id, item_id, quantity, result_json, cart_revision) VALUES (?, ?, ?, ?, ?, ?)", (session_hash, action_id, item_id, quantity, json.dumps(result, ensure_ascii=False), cart_revision))
-        record_completed_action(connection, session_hash, action_id, "cart.set_quantity", result["revision"])
-        return result
+        return set_session_quantity(connection, session_hash, action_id, item_id, quantity, cart_revision)
+
+
+def set_session_quantity(connection: sqlite3.Connection, session_hash: str, action_id: str, item_id: str, quantity: int, cart_revision: str) -> Cart:
+    if connection.execute("SELECT 1 FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone() is not None:
+        raise CartError("Action ID was already used for a different request.")
+    previous = connection.execute("SELECT item_id, quantity, result_json, cart_revision FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
+    if previous is not None:
+        if previous[:2] != (item_id, quantity) or previous[3] != cart_revision:
+            raise CartError("Action ID was already used for a different request.")
+        return cast(Cart, json.loads(previous[2]))
+    if read_cart(connection, session_hash)["revision"] != cart_revision:
+        raise CartError("Your cart changed. Review the updated cart and try again.")
+    item = connection.execute("SELECT available FROM menu_items WHERE id = ?", (item_id,)).fetchone()
+    if item is None:
+        raise CartError("Menu item does not exist.")
+    existing = connection.execute("SELECT quantity FROM cart_items WHERE session_hash = ? AND item_id = ?", (session_hash, item_id)).fetchone()
+    current: int = existing[0] if existing is not None else 0
+    if not item[0] and quantity > current:
+        raise CartError("Item is sold out; its quantity cannot be increased.")
+    if quantity == 0:
+        connection.execute("DELETE FROM cart_items WHERE session_hash = ? AND item_id = ?", (session_hash, item_id))
+    else:
+        connection.execute("INSERT INTO cart_items (session_hash, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(session_hash, item_id) DO UPDATE SET quantity = excluded.quantity", (session_hash, item_id, quantity))
+    result: Cart = read_cart(connection, session_hash)
+    connection.execute("INSERT INTO cart_actions (session_hash, action_id, item_id, quantity, result_json, cart_revision) VALUES (?, ?, ?, ?, ?, ?)", (session_hash, action_id, item_id, quantity, json.dumps(result, ensure_ascii=False), cart_revision))
+    record_completed_action(connection, session_hash, action_id, "cart.set_quantity", result["revision"])
+    return result
 
 
 class Order(TypedDict):

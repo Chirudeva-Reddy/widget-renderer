@@ -112,6 +112,25 @@ class PayloadApiTests(unittest.TestCase):
         self.assertEqual(self.restaurant_request("chat", {**request, "rendered_view_id": None}, cookie, "chat")[0], 409)
         self.assertEqual(self.restaurant_request("chat", {**request, "locale": "ar"}, cookie, "chat")[0], 409)
 
+    def test_widget_action_ownership_binding_staleness_and_retry(self) -> None:
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        widget = self.widget("en", cookie)
+        action = {"widget_id": widget["widget_id"], "revision": widget["revision"], "action_id": "widget-action", "type": "cart.set_quantity", "payload": {"item_id": "hummus", "position": 1, "quantity": 1, "cart_revision": cart["revision"]}}
+        self.assertEqual(self.restaurant_request("actions", action, other, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", {**action, "payload": {**action["payload"], "position": 2}}, cookie, "widget-action")[0], 409)
+        status, result, _ = self.restaurant_request("actions", action, cookie, "widget-action")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["items"][0]["quantity"], 1)
+        self.assertEqual(self.restaurant_request("actions", action, cookie, "widget-action")[1], result)
+        self.assertEqual(self.restaurant_request("actions", {**action, "payload": {**action["payload"], "quantity": 2}}, cookie, "widget-action")[0], 409)
+        self.assertEqual(self.restaurant_request("cart/quantity", {"action_id": "widget-action", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")[0], 409)
+        self.assertEqual(self.restaurant_request("actions", {**action, "action_id": "stale"}, cookie, "widget-action")[0], 409)
+        fresh = self.widget("en", cookie)
+        updated = {**action, "widget_id": fresh["widget_id"], "revision": fresh["revision"], "action_id": "second", "payload": {**action["payload"], "quantity": 2, "cart_revision": fresh["cart_revision"]}}
+        self.assertEqual(self.restaurant_request("actions", updated, cookie, "widget-action")[1]["items"][0]["quantity"], 2)
+        self.assertEqual(len(self.action_context(cookie)["completed_actions"]), 2)
+
     def test_concurrent_quantity_changes_reject_stale_cart(self) -> None:
         _, cart, cookie = self.restaurant_request("session", {}, "", "session")
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/menu") as response:
