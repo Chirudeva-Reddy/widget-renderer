@@ -1,6 +1,8 @@
 import json
 from typing import Literal, NoReturn, NotRequired, TypedDict
 
+from app.chart import ChartLimitError, ChartNode, validate_chart
+
 
 class Issue(TypedDict):
     code: str
@@ -50,7 +52,7 @@ class TableNode(TypedDict):
     rows: list[TableRow]
 
 
-Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode | TableNode
+Node = TextNode | BadgeNode | DividerNode | ProblemNode | ContainerNode | TableNode | ChartNode
 
 
 class ValidationResult(TypedDict):
@@ -126,7 +128,7 @@ def validate_source(source: str) -> ValidationResult:
             return invalid("source_limit", "Widget source exceeds the size limit.")
         check_structure(source)
         data: object = json.loads(source, object_pairs_hook=unique_object, parse_constant=reject_constant)
-    except (json.JSONDecodeError, InvalidSource, RecursionError):
+    except (ValueError, RecursionError):
         return invalid("invalid_json", "Widget JSON is malformed or exceeds structural limits.")
     check_unicode(data)
     if not isinstance(data, dict):
@@ -179,7 +181,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
                 continue
             seen_keys.add(child_key)
         child_type: object = child.get("type") if isinstance(child, dict) else None
-        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Table", "Row", "Col"))
+        allowed: bool = (component == "ListView" and child_type == "ListViewItem") or (component != "ListView" and child_type in ("Text", "Title", "Caption", "Badge", "Divider", "Table", "Chart", "Row", "Col"))
         if not isinstance(child, dict) or not allowed:
             issues.append(issue("unsupported_child", child_path, "error", "Child is unsupported or invalid."))
             nodes.append({"kind": "problem", "message": "This item could not be displayed."})
@@ -205,6 +207,16 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
             elif "weight" in child:
                 issues.append(issue("invalid_property", f"{child_path}.weight", "warning", "Weight is not supported."))
             nodes.append(text_node)
+        elif child_type == "Chart":
+            try:
+                chart, chart_issues = validate_chart(child, child_path)
+            except ChartLimitError as error:
+                raise InvalidSource(str(error)) from error
+            issues.extend(chart_issues)
+            if chart is None:
+                nodes.append({"kind": "problem", "message": "This chart could not be displayed."})
+            else:
+                nodes.append(chart)
         elif child_type == "Table":
             if not isinstance(child.get("children"), list):
                 issues.append(issue("unsupported_child", child_path, "error", "Table children must be an array."))
@@ -252,7 +264,7 @@ def validate_container(data: dict[str, object], path: str, component: str) -> tu
 
 
 def count_nodes(node: Node) -> int:
-    if node["kind"] in ("text", "title", "caption", "badge", "divider", "problem"):
+    if node["kind"] in ("text", "title", "caption", "badge", "divider", "chart", "problem"):
         return 1
     if node["kind"] == "table":
         return 1 + sum(1 + sum(1 + sum(count_nodes(child) for child in cell["children"]) for cell in row["cells"]) for row in node["rows"])
