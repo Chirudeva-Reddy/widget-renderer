@@ -110,6 +110,8 @@ def set_session_quantity(connection: sqlite3.Connection, session_hash: str, acti
     else:
         connection.execute("INSERT INTO cart_items (session_hash, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(session_hash, item_id) DO UPDATE SET quantity = excluded.quantity", (session_hash, item_id, quantity))
     result: Cart = read_cart(connection, session_hash)
+    if result["revision"] != cart_revision:
+        connection.execute("UPDATE checkout_views SET consumed = 1 WHERE session_hash = ?", (session_hash,))
     connection.execute("INSERT INTO cart_actions (session_hash, action_id, item_id, quantity, result_json, cart_revision) VALUES (?, ?, ?, ?, ?, ?)", (session_hash, action_id, item_id, quantity, json.dumps(result, ensure_ascii=False), cart_revision))
     record_completed_action(connection, session_hash, action_id, "cart.set_quantity", result["revision"])
     return result
@@ -182,25 +184,32 @@ def confirm_order(path: Path, token: str, action_id: str, cart_revision: str) ->
     with sqlite3.connect(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         session_hash: str = require_session(connection, token)
-        previous = connection.execute("SELECT result_json, cart_revision FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
-        if previous is not None:
-            if previous[1] != cart_revision:
-                raise CartError("Action ID was already used for a different request.")
-            return cast(Order, json.loads(previous[0]))
-        if connection.execute("SELECT 1 FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone() is not None:
+        if connection.execute("SELECT 1 FROM widget_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone() is not None:
             raise CartError("Action ID was already used for a different request.")
-        cart: Cart = read_cart(connection, session_hash)
-        if cart["revision"] != cart_revision:
-            raise CartError("Your cart or availability changed. Refresh your cart and review it before confirming.")
-        if not cart["items"]:
-            raise CartError("Your cart is empty. Add an item before confirming.")
-        if not cart["can_checkout"]:
-            raise CartError("An item is sold out. Remove it before confirming.")
-        order: Order = {"order_id": secrets.token_urlsafe(12), "status": "confirmed", "items": cart["items"], "total_minor": cart["total_minor"], "currency": cart["currency"]}
-        result_json: str = json.dumps(order, ensure_ascii=False)
-        connection.execute("INSERT INTO orders (id, session_hash, result_json, created_at) VALUES (?, ?, ?, ?)", (order["order_id"], session_hash, result_json, int(time.time())))
-        connection.execute("INSERT INTO order_actions (session_hash, action_id, order_id, cart_revision, result_json) VALUES (?, ?, ?, ?, ?)", (session_hash, action_id, order["order_id"], cart_revision, result_json))
-        connection.execute("DELETE FROM cart_items WHERE session_hash = ?", (session_hash,))
-        empty_cart: Cart = read_cart(connection, session_hash)
-        record_completed_action(connection, session_hash, action_id, "order.confirm", empty_cart["revision"])
-        return order
+        return confirm_session_order(connection, session_hash, action_id, cart_revision)
+
+
+def confirm_session_order(connection: sqlite3.Connection, session_hash: str, action_id: str, cart_revision: str) -> Order:
+    previous = connection.execute("SELECT result_json, cart_revision FROM order_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone()
+    if previous is not None:
+        if previous[1] != cart_revision:
+            raise CartError("Action ID was already used for a different request.")
+        return cast(Order, json.loads(previous[0]))
+    if connection.execute("SELECT 1 FROM cart_actions WHERE session_hash = ? AND action_id = ?", (session_hash, action_id)).fetchone() is not None:
+        raise CartError("Action ID was already used for a different request.")
+    cart: Cart = read_cart(connection, session_hash)
+    if cart["revision"] != cart_revision:
+        raise CartError("Your cart or availability changed. Refresh your cart and review it before confirming.")
+    if not cart["items"]:
+        raise CartError("Your cart is empty. Add an item before confirming.")
+    if not cart["can_checkout"]:
+        raise CartError("An item is sold out. Remove it before confirming.")
+    order: Order = {"order_id": secrets.token_urlsafe(12), "status": "confirmed", "items": cart["items"], "total_minor": cart["total_minor"], "currency": cart["currency"]}
+    result_json: str = json.dumps(order, ensure_ascii=False)
+    connection.execute("INSERT INTO orders (id, session_hash, result_json, created_at) VALUES (?, ?, ?, ?)", (order["order_id"], session_hash, result_json, int(time.time())))
+    connection.execute("INSERT INTO order_actions (session_hash, action_id, order_id, cart_revision, result_json) VALUES (?, ?, ?, ?, ?)", (session_hash, action_id, order["order_id"], cart_revision, result_json))
+    connection.execute("UPDATE checkout_views SET consumed = 1 WHERE session_hash = ?", (session_hash,))
+    connection.execute("DELETE FROM cart_items WHERE session_hash = ?", (session_hash,))
+    empty_cart: Cart = read_cart(connection, session_hash)
+    record_completed_action(connection, session_hash, action_id, "order.confirm", empty_cart["revision"])
+    return order

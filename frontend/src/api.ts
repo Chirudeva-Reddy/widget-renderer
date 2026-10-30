@@ -146,6 +146,29 @@ const orderSchema = z.object({
 export type Order = z.infer<typeof orderSchema>;
 export class ConfirmationConflict extends Error {}
 
+const checkoutViewSchema = z.object({ widget_id: z.string().min(1).max(128), revision: z.number().int().positive(), cart: cartSchema }).strict();
+export type CheckoutView = z.infer<typeof checkoutViewSchema>;
+export async function startWidgetCheckout(widgetId: string, revision: number, actionId: string, cartRevision: string): Promise<CheckoutView> {
+  const response: Response = await fetch("/api/actions", { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-action" }, body: JSON.stringify({ widget_id: widgetId, revision, action_id: actionId, type: "checkout.start", payload: { cart_revision: cartRevision } }) });
+  const payload: unknown = await response.json();
+  if (!response.ok) { const error = z.object({ message: z.string() }).safeParse(payload); throw new Error(error.success ? error.data.message : `Checkout failed (${response.status}).`); }
+  return checkoutViewSchema.parse(payload);
+}
+
+export async function editWidgetOrder(widgetId: string, revision: number, actionId: string, cartRevision: string): Promise<void> {
+  const response: Response = await fetch("/api/actions", { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-action" }, body: JSON.stringify({ widget_id: widgetId, revision, action_id: actionId, type: "order.edit", payload: { cart_revision: cartRevision } }) });
+  const payload: unknown = await response.json();
+  if (!response.ok) { const error = z.object({ message: z.string() }).safeParse(payload); throw new Error(error.success ? error.data.message : `Edit failed (${response.status}).`); }
+  z.object({ edited: z.literal(true) }).strict().parse(payload);
+}
+
+export async function confirmWidgetOrder(widgetId: string, revision: number, actionId: string, cartRevision: string): Promise<Order> {
+  const response: Response = await fetch("/api/actions", { method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "widget-action" }, body: JSON.stringify({ widget_id: widgetId, revision, action_id: actionId, type: "order.confirm", payload: { cart_revision: cartRevision } }) });
+  const payload: unknown = await response.json();
+  if (!response.ok) { const error = z.object({ message: z.string() }).safeParse(payload); const message: string = error.success ? error.data.message : `Confirmation failed (${response.status}).`; if (response.status === 409) throw new ConfirmationConflict(message); throw new Error(message); }
+  return orderSchema.parse(payload);
+}
+
 export async function confirmOrder(actionId: string, cartRevision: string): Promise<Order> {
   const response: Response = await fetch("/api/orders/confirm", {
     method: "POST", headers: { "Content-Type": "application/json", "X-Demo-Action": "confirm" },
