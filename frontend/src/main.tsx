@@ -2,7 +2,7 @@ import { Component, StrictMode, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
-import { acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, parseSnapshot, restockItem, sellOutItem, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
+import { acknowledgeWidget, ConfirmationConflict, confirmOrder, confirmWidgetOrder, editWidgetOrder, fetchCart, fetchMenu, fetchState, parseSnapshot, readSnapshotRevision, restockItem, sellOutItem, startSession, startWidgetCheckout, streamChat, updateCart, updateWidgetCart, validatePayload } from "./api";
 import type { Card, Cart, ChatReply, Menu, Node, Order, Snapshot, ValidationResult, WidgetEnvelope, CheckoutView } from "./api";
 import { Chart } from "./Chart";
 import { ConfirmationRecovery, OrderReceipt, OrderReview } from "./CheckoutWidget";
@@ -141,6 +141,11 @@ function App(): ReactElement {
   const [sessionReady, setSessionReady] = useState<boolean>(false);
   const [live, setLive] = useState<boolean>(false);
   const [liveNotice, setLiveNotice] = useState<string>("Connecting to live updates…");
+  const [resyncVersion, setResyncVersion] = useState<number>(0);
+  const [resyncPending, setResyncPending] = useState<boolean>(false);
+  const observedRevision = useRef<number>(0);
+  const appliedRevision = useRef<number>(0);
+  const invalidRevision = useRef<number | null>(null);
 
 
   async function reviewOrder(): Promise<void> {
@@ -241,12 +246,17 @@ function App(): ReactElement {
     let source: EventSource | null = null;
     let retry: number | null = null;
     let heartbeat: number | null = null;
+    function applySnapshot(snapshot: Snapshot): void {
+      appliedRevision.current = snapshot.state_revision;
+      setDisplayedMenu({ menu: snapshot.menu, widgets: snapshot.menu_widgets, ids: snapshot.menu_view_ids, envelopes: snapshot.widgets });
+      setMenu(snapshot.menu);
+      setCart(snapshot.cart);
+    }
     function connect(): void {
       if (!active) return;
       source = new EventSource("/api/events");
       source.addEventListener("snapshot", (event: MessageEvent<string>) => {
         try {
-          const snapshot: Snapshot = parseSnapshot(event.data);
           if (!active) return;
           if (heartbeat !== null) window.clearTimeout(heartbeat);
           heartbeat = window.setTimeout(() => {
@@ -255,34 +265,66 @@ function App(): ReactElement {
             source?.close();
             retry = window.setTimeout(connect, 2000);
           }, 10000);
+          const revision: number = readSnapshotRevision(event.data);
+          if (revision < observedRevision.current) return;
+          observedRevision.current = revision;
+          if (invalidRevision.current !== null && revision <= invalidRevision.current) return;
+          if (revision > appliedRevision.current) {
+            const snapshot: Snapshot = parseSnapshot(event.data);
+            if (pendingChanges.current > 0) return;
+            applySnapshot(snapshot);
+          }
           if (pendingChanges.current > 0) return;
-          setDisplayedMenu({ menu: snapshot.menu, widgets: snapshot.menu_widgets, ids: snapshot.menu_view_ids, envelopes: snapshot.widgets });
-          setMenu(snapshot.menu);
-          setCart(snapshot.cart);
+          invalidRevision.current = null;
           setLive(true);
           setLiveNotice("");
         } catch (error: unknown) {
+          if (heartbeat !== null) window.clearTimeout(heartbeat);
           setLive(false);
-          setLiveNotice("The live update could not be read. Reconnecting…");
+          invalidRevision.current = observedRevision.current;
+          setLiveNotice("The live update could not be read. The last safe view is retained. Resync to recover.");
           source?.close();
           retry = window.setTimeout(connect, 2000);
         }
       });
       source.addEventListener("session_expired", () => {
+        if (!active) return;
         if (heartbeat !== null) window.clearTimeout(heartbeat);
         setLive(false);
         setLiveNotice("Your session expired. Refresh the page to start again.");
         source?.close();
       });
       source.onerror = () => {
+        if (!active) return;
         if (heartbeat !== null) window.clearTimeout(heartbeat);
         setLive(false);
         setLiveNotice("Live updates disconnected. Reconnecting and refreshing your cart…");
       };
     }
-    connect();
+    async function resynchronize(): Promise<void> {
+      setResyncPending(true);
+      try {
+        const snapshot: Snapshot = await fetchState();
+        if (!active) return;
+        if (snapshot.state_revision < observedRevision.current) throw new Error("State synchronization returned an older snapshot. Retry Resync.");
+        if (pendingChanges.current > 0) throw new Error("Wait for pending changes, then retry Resync.");
+        observedRevision.current = snapshot.state_revision;
+        invalidRevision.current = null;
+        applySnapshot(snapshot);
+        setLiveNotice("State restored. Waiting for live updates…");
+        connect();
+      } catch (error: unknown) {
+        if (!active) return;
+        setLive(false);
+        setLiveNotice(error instanceof Error ? error.message : "State synchronization failed. Retry Resync.");
+      } finally {
+        if (active) setResyncPending(false);
+      }
+    }
+    if (resyncVersion > 0) void resynchronize();
+    else connect();
     return () => { active = false; source?.close(); if (retry !== null) window.clearTimeout(retry); if (heartbeat !== null) window.clearTimeout(heartbeat); };
-  }, [sessionReady]);
+  }, [sessionReady, resyncVersion]);
 
   function editQuantity(itemId: string, edit: QuantityEdit | null): void {
     setQuantityEdits((current: Readonly<Record<string, QuantityEdit>>) => {
@@ -457,6 +499,7 @@ function App(): ReactElement {
       <div className="menu-heading"><div><span className="step">RESTAURANT / المطعم</span><h2 id="menu-title">Demo menu <span lang="ar" dir="rtl"> / قائمة الطعام</span></h2></div><button type="button" onClick={() => { void refreshMenu(); }} disabled={menuPending}>Refresh menu</button></div>
       <p className="menu-help">Mock restaurant data · Mark an item sold out or restock it to try an inventory update. Changes appear automatically in other tabs.</p>
       {liveNotice && <p className="notice" role="status">{liveNotice}</p>}
+      <button type="button" disabled={!sessionReady || cartPending || resyncPending} onClick={() => { setLive(false); setLiveNotice("Synchronizing widgets…"); setResyncVersion((version: number) => version + 1); }}>{resyncPending ? "Synchronizing…" : "Resync"}</button>
       {menuError && <p className="notice" role="alert">{menuError}</p>}
       {menu && <><p className="menu-revision">Menu version {menu.revision}</p><ul className="menu-list">{menu.items.map((item) => <li key={item.id}>
         <div><strong>{item.name.en}</strong><span className="menu-ar" lang="ar" dir="rtl">{item.name.ar}</span><span className="menu-price">AED {(item.price_minor / 100).toFixed(2)} · {item.available ? "Available / متوفر" : "Sold out / نفد"}</span></div>

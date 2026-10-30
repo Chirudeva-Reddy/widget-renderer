@@ -31,6 +31,7 @@ def initialize_widgets(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE IF NOT EXISTS widgets (id TEXT PRIMARY KEY, session_hash TEXT NOT NULL, locale TEXT NOT NULL, UNIQUE(session_hash, locale))")
         connection.execute("CREATE TABLE IF NOT EXISTS widget_revisions (widget_id TEXT NOT NULL, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, envelope_json TEXT NOT NULL, PRIMARY KEY(widget_id, revision))")
+        connection.execute("CREATE TABLE IF NOT EXISTS session_snapshots (session_hash TEXT PRIMARY KEY, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL)")
         connection.execute("CREATE TABLE IF NOT EXISTS widget_acknowledgements (widget_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
 
 

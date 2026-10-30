@@ -259,6 +259,35 @@ class PayloadApiTests(unittest.TestCase):
                     return json.loads(line[6:])
         raise RuntimeError("SSE returned no initial snapshot.")
 
+    def state(self, cookie: str) -> dict[str, Any]:
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/state", headers={"Cookie": cookie})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            return json.load(response)
+
+    def test_state_resync_is_scoped_ordered_and_matches_stream(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            self.state("")
+        self.assertEqual(missing.exception.code, 401)
+        _, cart, cookie = self.restaurant_request("session", {}, "", "session")
+        _, _, other = self.restaurant_request("session", {}, "", "session")
+        first = self.state(cookie)
+        other_first = self.state(other)
+        self.assertEqual(first, self.state(cookie))
+        self.assertEqual(first, self.snapshot(cookie))
+        self.assertNotEqual(first["widgets"]["en"]["widget_id"], other_first["widgets"]["en"]["widget_id"])
+        self.assertEqual(self.restaurant_request("cart/quantity", {"action_id": "resync-add", "item_id": "hummus", "quantity": 1, "cart_revision": cart["revision"]}, cookie, "cart")[0], 200)
+        updated = self.state(cookie)
+        self.assertGreater(updated["state_revision"], first["state_revision"])
+        self.assertEqual(updated["cart"]["items"][0]["quantity"], 1)
+        self.assertEqual(other_first, self.state(other))
+        self.assertEqual(updated, self.state(cookie))
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/events", headers={"Cookie": cookie, "Last-Event-ID": str(first["state_revision"])})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(next(response).decode().strip(), f"id: {updated['state_revision']}")
+            self.assertEqual(next(response), b"event: snapshot\n")
+            self.assertEqual(json.loads(next(response)[6:]), updated)
+
     def test_menu_views_are_stable_scoped_and_immutable(self) -> None:
         _, _, cookie = self.restaurant_request("session", {}, "", "session")
         initial = self.snapshot(cookie)

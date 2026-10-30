@@ -193,8 +193,16 @@ export async function acknowledgeWidget(widget: WidgetEnvelope): Promise<void> {
   if (!response.ok) throw new Error(`Widget acknowledgement failed (${response.status}).`);
   widgetSchema.parse(await response.json() as unknown);
 }
-const snapshotSchema = z.object({ widgets: z.object({ en: widgetSchema, ar: widgetSchema }).strict(), menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict(), menu_view_ids: z.object({ en: z.string().min(1).max(128), ar: z.string().min(1).max(128) }).strict() }).strict();
+const snapshotSchema = z.object({ state_revision: z.number().int().positive(), widgets: z.object({ en: widgetSchema, ar: widgetSchema }).strict(), menu: menuSchema, cart: cartSchema, menu_widgets: z.object({ en: cardSchema, ar: cardSchema }).strict(), menu_view_ids: z.object({ en: z.string().min(1).max(128), ar: z.string().min(1).max(128) }).strict() }).strict();
 export type Snapshot = z.infer<typeof snapshotSchema>;
+export function readSnapshotRevision(source: string): number {
+  return z.object({ state_revision: z.number().int().positive() }).parse(JSON.parse(source) as unknown).state_revision;
+}
+export async function fetchState(): Promise<Snapshot> {
+  const response: Response = await fetch("/api/state", { cache: "no-store" });
+  if (!response.ok) throw new Error(`State synchronization failed (${response.status}). Retry Resync.`);
+  return snapshotSchema.parse(await response.json() as unknown);
+}
 export function parseSnapshot(source: string): Snapshot {
   const payload: unknown = JSON.parse(source);
   return snapshotSchema.parse(payload);

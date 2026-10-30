@@ -190,8 +190,18 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/state", response_model=None)
+def state(request: Request) -> JSONResponse:
+    """Return the owning session's authoritative snapshot without caching it."""
+    try:
+        return JSONResponse(content=read_snapshot(DATABASE_PATH, request.cookies.get("restaurant_session", "")), headers={"Cache-Control": "no-store"})
+    except SessionError:
+        return error_response(401, "session_required", "Start a session to synchronize widgets.")
+
+
 @app.get("/api/events", response_model=None)
 async def events(request: Request) -> StreamingResponse | JSONResponse:
+    """Stream full current snapshots; event IDs identify state rather than a replay cursor."""
     token: str = request.cookies.get("restaurant_session", "")
     try:
         initial = await asyncio.to_thread(read_snapshot, DATABASE_PATH, token)
@@ -201,7 +211,7 @@ async def events(request: Request) -> StreamingResponse | JSONResponse:
     async def stream() -> AsyncIterator[str]:
         snapshot = initial
         while True:
-            yield f"event: snapshot\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
+            yield f"id: {snapshot['state_revision']}\nevent: snapshot\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
             await asyncio.sleep(1)
             try:
                 snapshot = await asyncio.to_thread(read_snapshot, DATABASE_PATH, token)
